@@ -1,6 +1,7 @@
 window.Telegram.WebApp.ready();
 
-const API_URL = "https://cradar-production.up.railway.app/data";  // ← новая рабочая ссылка
+// Используем относительный путь, чтобы fetch обращался к серверу внутри того же контейнера
+const API_URL = "/data";  
 
 async function updateInflow() {
     try {
@@ -14,5 +15,6 @@ async function updateInflow() {
     }
 }
 
+// Первый вызов и обновление каждые 60 секунд
 updateInflow();
 setInterval(updateInflow, 60000);
