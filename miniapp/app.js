@@ -1,6 +1,6 @@
 window.Telegram.WebApp.ready();
 
-const API_URL = "https://b241660030b141d7-194-242-96-14.serveousercontent.com/data";  // ← сюда свою ссылку
+const API_URL = "https://cradar-production.up.railway.app/data";  // ← новая рабочая ссылка
 
 async function updateInflow() {
     try {
