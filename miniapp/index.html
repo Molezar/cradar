@@ -7,29 +7,8 @@
 </head>
 <body>
 <h1>BTC Signals</h1>
-<div id="alert">Waiting for signals... 🚀</div>
+<div id="alert">Waiting for signals...</div>
 
 <script src="app.js"></script>
-<script>
-// Проверяем, что JS запускается
-console.log("MiniApp loaded");
-alert("MiniApp JS is running!");
-
-// Временная проверка fetch
-async function testFetch() {
-    try {
-        const resp = await fetch("/data?t=" + Date.now()); // анти-кеш
-        const data = await resp.json();
-        alert("Fetch worked! BTC inflow: " + data.btc_inflow);
-        document.getElementById("alert").innerText =
-            `📥 BTC inflow last 60 min: ${data.btc_inflow} BTC`;
-    } catch (e) {
-        alert("Fetch failed!"); 
-        document.getElementById("alert").innerText = "⚠️ API error";
-    }
-}
-
-testFetch();
-</script>
 </body>
 </html>
