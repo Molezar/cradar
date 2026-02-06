@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.Python
+env/
+venv/
+.venv/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+
+# Flask
+instance/
+.webassets-cache
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.*
+*.env
+
+# Railway
+.railway/
+
+# VSCode / JetBrains
+.vscode/
+.idea/
+
+# Android / Termux
+storage/
+*.apk
+*.aab
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (на будущее)
+node_modules/
+
+# Secrets
+config.json
+secrets.json
+
+# SQLite / DB
+*.sqlite
+*.db
+
+# Coverage
+htmlcov/
+.coverage
+
+# Build
+dist/
+build/
+
+# Serveo, ngrok temp
+*.tunnel
