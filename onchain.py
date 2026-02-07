@@ -1,5 +1,6 @@
 import time
 import requests
+import random
 
 # Реальные Binance hot wallets
 BINANCE_ADDRESSES = [
@@ -15,8 +16,15 @@ def get_address_txs(addr):
     r.raise_for_status()
     return r.json()
 
-def btc_inflow_last_minutes(minutes=60):
-    cutoff = int(time.time()) - minutes * 60
+def btc_inflow_last_minutes(minutes=None, test_mode=False):
+    """
+    Если test_mode=True, возвращает случайное значение для проверки MiniApp
+    Если minutes=None, считает все транзакции без ограничения времени
+    """
+    if test_mode:
+        return round(random.uniform(100, 500), 2)
+
+    cutoff = int(time.time()) - minutes * 60 if minutes else 0
     total_sats = 0
 
     for addr in BINANCE_ADDRESSES:
@@ -27,7 +35,7 @@ def btc_inflow_last_minutes(minutes=60):
             block_time = status.get("block_time")
 
             # если транзакция не в блоке или слишком старая — пропускаем
-            if not block_time or block_time < cutoff:
+            if block_time is None or block_time < cutoff:
                 continue
 
             # считаем только входящие в Binance outputs
