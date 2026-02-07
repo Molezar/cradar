@@ -9,15 +9,18 @@ CORS(app)
 MINIAPP_DIR = os.path.join(os.path.dirname(__file__), "miniapp")
 
 # -----------------------
-# Настройка режима работы
+# ГЛАВНЫЕ НАСТРОЙКИ
 # -----------------------
-# TEST_MODE = True  -> MiniApp получает случайные значения (тест)
-# TEST_MODE = False -> MiniApp получает реальные данные с Binance (боевой режим)
-TEST_MODE = False  # <- включаем боевой режим для проверки реальных данных
+
+TEST_MODE = False     # False = боевой режим, True = тестовый (рандом)
+MINUTES = 360         # сколько минут считаем (360 = 6 часов, 1440 = сутки, 10080 = неделя)
 
 @app.route("/data")
 def get_data():
-    inflow = btc_inflow_last_minutes(minutes=60, test_mode=TEST_MODE)
+    inflow = btc_inflow_last_minutes(
+        minutes=MINUTES,
+        test_mode=TEST_MODE
+    )
     return jsonify({"btc_inflow": inflow})
 
 @app.route("/")
