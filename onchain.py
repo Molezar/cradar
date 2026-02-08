@@ -1,22 +1,19 @@
+import os
 import requests
-import time
 
-# CoinGlass (бывш. Bybt) — бесплатный агрегированный inflow Binance
 COINGLASS_URL = "https://open-api.coinglass.com/public/v2/indicator/exchange_netflow"
 
+COINGLASS_API_KEY = os.getenv("COINGLASS_API_KEY")
+
+if not COINGLASS_API_KEY:
+    raise Exception("COINGLASS_API_KEY is not set")
+
 HEADERS = {
-    "User-Agent": "Mozilla/5.0",
+    "coinglassSecret": COINGLASS_API_KEY,
     "Accept": "application/json"
 }
 
 def btc_inflow_last_minutes(minutes=60):
-    """
-    Возвращает чистый inflow BTC на Binance за период
-    minutes = 60, 240, 1440 и т.д.
-    CoinGlass сам агрегирует on-chain данные всех кошельков Binance
-    """
-
-    # CoinGlass работает по таймфреймам: 1h, 4h, 1d
     if minutes <= 60:
         interval = "1h"
     elif minutes <= 240:
@@ -30,23 +27,11 @@ def btc_inflow_last_minutes(minutes=60):
         "interval": interval
     }
 
-    try:
-        r = requests.get(COINGLASS_URL, params=params, headers=HEADERS, timeout=10)
-        r.raise_for_status()
-        data = r.json()
+    r = requests.get(COINGLASS_URL, params=params, headers=HEADERS, timeout=15)
+    r.raise_for_status()
+    data = r.json()["data"][0]
 
-        # структура:
-        # data["data"][0]["inflow"], ["outflow"]
-        d = data["data"][0]
+    inflow = float(data["inflow"])
+    outflow = float(data["outflow"])
 
-        inflow = float(d["inflow"])
-        outflow = float(d["outflow"])
-
-        # чистый приток
-        net = inflow - outflow
-
-        return round(net, 2)
-
-    except Exception as e:
-        print("API error:", e)
-        return 0
+    return round(inflow - outflow, 2)
