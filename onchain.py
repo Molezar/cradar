@@ -1,8 +1,5 @@
 import os
 import requests
-from dotenv import load_dotenv
-
-load_dotenv()
 
 COINGLASS_KEY = os.getenv("COINGLASS_KEY")
 BASE_URL = "https://open-api.coinglass.com/public/v2/indicator"
