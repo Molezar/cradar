@@ -11,7 +11,7 @@ MINIAPP_DIR = os.path.join(os.path.dirname(__file__), "miniapp")
 # -----------------------
 # НАСТРОЙКИ
 # -----------------------
-MINUTES = 60  # последние N минут
+MINUTES = 1440  # последние N минут
 
 @app.route("/data")
 def get_data():
