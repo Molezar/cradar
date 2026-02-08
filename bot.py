@@ -4,7 +4,7 @@ from aiogram.types import WebAppInfo
 from aiogram.filters import Command
 from onchain import btc_inflow_last_minutes
 
-API_TOKEN = "1841355292:AAEXOIZkYOe4UJmmXJWNkHQUz0Z7YxWA_1k"
+API_TOKEN = "1"
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()

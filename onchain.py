@@ -1,49 +1,41 @@
-import time
 import requests
 
-# Актуальные Binance hot wallets (активные в 2025–2026)
-BINANCE_ADDRESSES = [
-    "3JZq4atUahhuA9rLhXLMhhTo133J9rF97j",
-    "3FZbgi29cpjq2GjdwV8eyHuJJnkLtktZc5",
-    "3D2oetdNuZUqQHPJmcMDDHYoqkyNVsFk9r",
-    "bc1q0c9l8z6gk4y6m9r6z4yqj3v7p6s9xw2m4v9a7d",
-    "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
-    "bc1q8z5xw9k8l4zq0qjyr0w3d9n6rj0k2y0q7v3v4",
-    "bc1qg3k9j4p3n5w9h6q8k7l0v5z6m8c9y4x2t7",
-    "3LrZ7xFj5eF4kz2H9R4xk8ZsG2d7yqVwZ9"
-]
+BINANCE_COLD = "34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo"
 
-BLOCKSTREAM = "https://blockstream.info/api"
-
-
-def get_address_txs(addr):
-    url = f"{BLOCKSTREAM}/address/{addr}/txs"
-    r = requests.get(url, timeout=15)
+def get_txs(address):
+    url = f"https://blockstream.info/api/address/{address}/txs"
+    r = requests.get(url, timeout=10)
     r.raise_for_status()
     return r.json()
 
+def extract_neighbors(address, txs):
+    neigh = set()
 
-def btc_inflow_last_minutes(minutes=60):
-    cutoff = int(time.time()) - minutes * 60
-    total_sats = 0
+    for tx in txs:
+        for vin in tx.get("vin", []):
+            prev = vin.get("prevout")
+            if prev:
+                a = prev.get("scriptpubkey_address")
+                if a and a != address:
+                    neigh.add(a)
 
-    for addr in BINANCE_ADDRESSES:
-        try:
-            txs = get_address_txs(addr)
-        except Exception as e:
-            print("Address fetch failed:", addr, e)
-            continue
+        for vout in tx.get("vout", []):
+            a = vout.get("scriptpubkey_address")
+            if a and a != address:
+                neigh.add(a)
 
-        for tx in txs:
-            status = tx.get("status", {})
-            block_time = status.get("block_time")
+    return neigh
 
-            if not block_time or block_time < cutoff:
-                continue
+def build_cluster():
+    txs = get_txs(BINANCE_COLD)[:30]
 
-            for vout in tx.get("vout", []):
-                if vout.get("scriptpubkey_address") == addr:
-                    total_sats += vout.get("value", 0)
+    neighbors = extract_neighbors(BINANCE_COLD, txs)
 
-    btc = total_sats / 100_000_000
-    return round(btc, 4)
+    nodes = [{"id": BINANCE_COLD, "group": 0}]
+    links = []
+
+    for a in neighbors:
+        nodes.append({"id": a, "group": 1})
+        links.append({"source": BINANCE_COLD, "target": a})
+
+    return {"nodes": nodes, "links": links}
