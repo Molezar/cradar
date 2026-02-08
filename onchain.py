@@ -1,41 +1,34 @@
 import requests
 
+BLOCKSTREAM = "https://blockstream.info/api"
+
 BINANCE_COLD = "34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo"
 
-def get_txs(address):
-    url = f"https://blockstream.info/api/address/{address}/txs"
-    r = requests.get(url, timeout=10)
-    r.raise_for_status()
-    return r.json()
-
-def extract_neighbors(address, txs):
-    neigh = set()
-
-    for tx in txs:
-        for vin in tx.get("vin", []):
-            prev = vin.get("prevout")
-            if prev:
-                a = prev.get("scriptpubkey_address")
-                if a and a != address:
-                    neigh.add(a)
-
-        for vout in tx.get("vout", []):
-            a = vout.get("scriptpubkey_address")
-            if a and a != address:
-                neigh.add(a)
-
-    return neigh
 
 def build_cluster():
-    txs = get_txs(BINANCE_COLD)[:30]
+    try:
+        url = f"{BLOCKSTREAM}/address/{BINANCE_COLD}/txs"
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        txs = r.json()
 
-    neighbors = extract_neighbors(BINANCE_COLD, txs)
+        cluster = set()
+        cluster.add(BINANCE_COLD)
 
-    nodes = [{"id": BINANCE_COLD, "group": 0}]
-    links = []
+        for tx in txs:
+            # входы
+            for vin in tx.get("vin", []):
+                prev = vin.get("prevout")
+                if prev and "scriptpubkey_address" in prev:
+                    cluster.add(prev["scriptpubkey_address"])
 
-    for a in neighbors:
-        nodes.append({"id": a, "group": 1})
-        links.append({"source": BINANCE_COLD, "target": a})
+            # выходы
+            for vout in tx.get("vout", []):
+                if "scriptpubkey_address" in vout:
+                    cluster.add(vout["scriptpubkey_address"])
 
-    return {"nodes": nodes, "links": links}
+        return list(cluster)
+
+    except Exception as e:
+        print("Cluster build error:", e)
+        return []

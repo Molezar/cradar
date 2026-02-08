@@ -1,9 +1,8 @@
 body {
-    font-family: Arial, sans-serif;
-    background: #1a1a1a;
-    color: #fff;
-    text-align: center;
-    padding: 2rem;
+    background: #111;
+    color: #0f0;
+    font-family: monospace;
+    padding: 20px;
 }
 
 h1 {
