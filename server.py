@@ -1,7 +1,10 @@
-from flask import Flask, jsonify, send_from_directory
-from onchain import btc_inflow_last_minutes
+from flask import Flask, jsonify, send_from_directory, request
+from onchain import get_coinglass_data
 import os
 from flask_cors import CORS
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
@@ -9,14 +12,24 @@ CORS(app)
 MINIAPP_DIR = os.path.join(os.path.dirname(__file__), "miniapp")
 
 # -----------------------
-# НАСТРОЙКИ
+# Настройки
 # -----------------------
-MINUTES = 60   # 60 = 1 час, 240 = 4 часа, 1440 = сутки
+DEFAULT_INTERVAL = "1h"  # 1h, 4h, 1d
+DEFAULT_SYMBOL = "BTC"
+DEFAULT_EXCHANGE = "Binance"
 
 @app.route("/data")
 def get_data():
-    inflow = btc_inflow_last_minutes(minutes=MINUTES)
-    return jsonify({"btc_inflow": inflow})
+    interval = request.args.get("interval", DEFAULT_INTERVAL)
+    symbol = request.args.get("symbol", DEFAULT_SYMBOL)
+    exchange = request.args.get("exchange", DEFAULT_EXCHANGE)
+
+    try:
+        data = get_coinglass_data(symbol=symbol, exchange=exchange, interval=interval)
+    except Exception as e:
+        return jsonify({"error": f"API error: {str(e)}"}), 500
+
+    return jsonify(data)
 
 @app.route("/")
 def miniapp_index():
