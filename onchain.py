@@ -1,75 +1,52 @@
 import requests
 import time
 
-# -----------------------
-# Настройки Binance адресов
-# -----------------------
-BINANCE_ADDRESSES = [
-    "bc1q2s6gk6v5f3z7m0t3r9d5l2n7j8k9y0q4v5w6e7",  # пример живого депозита
-    "bc1q3z9f8e6v7m4p1n2r5d8k6t0y3l2w1v5e4q9j7",
-    "bc1q4f7g8h5j2k0m9n1r6t3w7y8v5e2q4l0p3d6c8"
-]
+# CoinGlass (бывш. Bybt) — бесплатный агрегированный inflow Binance
+COINGLASS_URL = "https://open-api.coinglass.com/public/v2/indicator/exchange_netflow"
 
-# -----------------------
-# Bitquery API
-# -----------------------
-BITQUERY_URL = "https://graphql.bitquery.io"
-BITQUERY_API_KEY = "YOUR_API_KEY_HERE"  # вставь токен Bitquery
+HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json"
+}
 
-def btc_inflow_last_minutes(minutes=360, test_mode=False):
+def btc_inflow_last_minutes(minutes=60):
     """
-    minutes = за сколько минут считаем (360 = 6 часов)
-    test_mode = True -> возвращает случайные данные
-    test_mode = False -> реальные on-chain inflow через Bitquery
+    Возвращает чистый inflow BTC на Binance за период
+    minutes = 60, 240, 1440 и т.д.
+    CoinGlass сам агрегирует on-chain данные всех кошельков Binance
     """
-    if test_mode:
-        import random
-        return round(random.uniform(100, 1500), 2)
 
-    # Определяем период
-    from datetime import datetime, timedelta
-    till = datetime.utcnow()
-    since = till - timedelta(minutes=minutes)
-    till_str = till.strftime("%Y-%m-%dT%H:%M:%S")
-    since_str = since.strftime("%Y-%m-%dT%H:%M:%S")
+    # CoinGlass работает по таймфреймам: 1h, 4h, 1d
+    if minutes <= 60:
+        interval = "1h"
+    elif minutes <= 240:
+        interval = "4h"
+    else:
+        interval = "1d"
 
-    total_btc = 0
+    params = {
+        "symbol": "BTC",
+        "exchange": "Binance",
+        "interval": interval
+    }
 
-    for addr in BINANCE_ADDRESSES:
-        query = """
-        query ($addr: String!, $since: ISO8601DateTime!, $till: ISO8601DateTime!) {
-          bitcoin(network: bitcoin) {
-            outputs(
-              outputAddress: {is: $addr}
-              date: {since: $since, till: $till}
-              options: {limit: 1000}
-            ) {
-              value
-            }
-          }
-        }
-        """
+    try:
+        r = requests.get(COINGLASS_URL, params=params, headers=HEADERS, timeout=10)
+        r.raise_for_status()
+        data = r.json()
 
-        variables = {
-            "addr": addr,
-            "since": since_str,
-            "till": till_str
-        }
+        # структура:
+        # data["data"][0]["inflow"], ["outflow"]
+        d = data["data"][0]
 
-        try:
-            resp = requests.post(
-                BITQUERY_URL,
-                json={"query": query, "variables": variables},
-                headers={"X-API-KEY": BITQUERY_API_KEY},
-                timeout=20
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            outputs = data["data"]["bitcoin"]["outputs"]
-            for o in outputs:
-                total_btc += o.get("value", 0)
-        except Exception as e:
-            print(f"Error fetching {addr}: {e}")
-            continue
+        inflow = float(d["inflow"])
+        outflow = float(d["outflow"])
 
-    return round(total_btc, 8)
+        # чистый приток
+        net = inflow - outflow
+
+        return round(net, 2)
+
+    except Exception as e:
+        print("API error:", e)
+        return 0

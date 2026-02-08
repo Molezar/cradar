@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, send_from_directory, request
+from flask import Flask, jsonify, send_from_directory
 from onchain import btc_inflow_last_minutes
 import os
 from flask_cors import CORS
@@ -9,17 +9,13 @@ CORS(app)
 MINIAPP_DIR = os.path.join(os.path.dirname(__file__), "miniapp")
 
 # -----------------------
-# Настройки по умолчанию
+# НАСТРОЙКИ
 # -----------------------
-TEST_MODE = False       # True = тестовые данные, False = реальные
-MINUTES_DEFAULT = 360   # 6 часов
+MINUTES = 60   # 60 = 1 час, 240 = 4 часа, 1440 = сутки
 
 @app.route("/data")
 def get_data():
-    # Можно через GET менять режим и минуты, пример: ?test=1&minutes=1440
-    test_mode = request.args.get("test", str(int(TEST_MODE))) == "1"
-    minutes = int(request.args.get("minutes", MINUTES_DEFAULT))
-    inflow = btc_inflow_last_minutes(minutes=minutes, test_mode=test_mode)
+    inflow = btc_inflow_last_minutes(minutes=MINUTES)
     return jsonify({"btc_inflow": inflow})
 
 @app.route("/")
