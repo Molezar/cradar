@@ -6,8 +6,12 @@ async function load() {
         document.getElementById("info").innerText =
             `Cold wallet: ${j.cold_wallet}\nCluster size: ${j.cluster_size}`;
 
-        document.getElementById("list").innerText =
-            j.addresses.join("\n");
+        let out = "";
+        for (const a of j.addresses) {
+            out += `${a.address}   ${a.btc} BTC\n`;
+        }
+
+        document.getElementById("list").innerText = out;
 
     } catch (e) {
         document.getElementById("info").innerText = "API error";

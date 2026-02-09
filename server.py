@@ -15,7 +15,7 @@ def data():
     return jsonify({
         "cold_wallet": "34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo",
         "cluster_size": len(cluster),
-        "addresses": cluster[:50]   # покажем первые 50, чтобы не перегружать
+        "addresses": cluster[:50]   # топ-50 по объёму
     })
 
 @app.route("/")
