@@ -2,7 +2,7 @@ from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 import os
 
-from config import PORT, DEBUG
+from config import DEBUG
 from onchain import build_cluster
 
 app = Flask(__name__)
@@ -33,6 +33,13 @@ def files(path):
 
 
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+
     print("ENV:", os.getenv("ENV"))
-    print("PORT:", PORT)
-    app.run(host="0.0.0.0", port=PORT, debug=DEBUG)
+    print("PORT:", port)
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=DEBUG
+    )

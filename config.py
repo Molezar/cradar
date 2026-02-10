@@ -7,5 +7,3 @@ WEBAPP_URL = os.getenv("WEBAPP_URL")
 
 DEBUG = ENV == "dev"
 IS_PROD = ENV == "prod"
-
-PORT = int(os.environ.get("PORT", 8000))
