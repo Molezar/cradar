@@ -3,7 +3,6 @@ from flask_cors import CORS
 import os
 
 from config import DEBUG
-from onchain import build_cluster
 
 app = Flask(__name__)
 CORS(app)
@@ -12,8 +11,16 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MINIAPP_DIR = os.path.join(BASE_DIR, "miniapp")
 
 
+@app.route("/health")
+def health():
+    return "ok"
+
+
 @app.route("/data")
 def data():
+    # импорт ТОЛЬКО при запросе
+    from onchain import build_cluster
+
     cluster = build_cluster()
     return jsonify({
         "cold_wallet": "34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo",
