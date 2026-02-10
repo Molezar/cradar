@@ -2,11 +2,11 @@ import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import WebAppInfo
 from aiogram.filters import Command
+
+from config import BOT_TOKEN, WEBAPP_URL
 from onchain import btc_inflow_last_minutes
 
-API_TOKEN = "1"
-
-bot = Bot(token=API_TOKEN)
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 subscribers = set()
@@ -22,21 +22,14 @@ async def start(message: types.Message):
             [
                 types.KeyboardButton(
                     text="Open MiniApp",
-                    web_app=WebAppInfo(url="https://b241660030b141d7-194-242-96-14.serveousercontent.com")
+                    web_app=WebAppInfo(url=WEBAPP_URL)
                 )
             ]
         ],
         resize_keyboard=True
     )
 
-    await message.answer(
-        "You are subscribed.\nOpen MiniApp to view BTC inflow.",
-        reply_markup=keyboard
-    )
-
-@dp.message(Command("inflow"))
-async def inflow(message: types.Message):
-    await message.answer(f"📥 Binance BTC inflow last 60 min: {latest_inflow} BTC")
+    await message.answer("Open MiniApp 👇", reply_markup=keyboard)
 
 async def background_alerts():
     global latest_inflow
@@ -48,10 +41,10 @@ async def background_alerts():
                 for chat_id in subscribers:
                     await bot.send_message(
                         chat_id,
-                        f"🔥 Whale inflow!\n{latest_inflow} BTC sent to Binance in 1h"
+                        f"🔥 Whale inflow!\n{latest_inflow} BTC sent to Binance"
                     )
-        except:
-            pass
+        except Exception as e:
+            print("Alert error:", e)
 
         await asyncio.sleep(120)
 
