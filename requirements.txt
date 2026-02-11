@@ -2,3 +2,4 @@ flask
 flask-cors
 aiogram
 requests
+python-dotenv
