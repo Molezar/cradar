@@ -1,111 +1,108 @@
-import requests
+import time
+import json
+import asyncio
+import websockets
+import queue
 
-BLOCKSTREAM = "https://blockstream.info/api"
-BINANCE_COLD = "34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo"
+from database.database import get_db
+from config import Config
+from logger import get_logger
 
+logger = get_logger(__name__)
+
+MIN_WHALE_BTC = Config.MIN_WHALE_BTC
+MEMPOOL_WS = "wss://mempool.space/api/v1/ws"
 SATOSHI = 100_000_000
-MIN_BTC = 10   # фильтр: берём только движения ≥ 10 BTC
 
-def btc_inflow_last_minutes(minutes=60):
-    """
-    Считает сколько BTC за последние N минут зашло
-    на холодный кошелёк Binance.
-    Использует последние 25 tx (лимит Blockstream).
-    """
+_events = queue.Queue()
 
-    try:
-        url = f"{BLOCKSTREAM}/address/{BINANCE_COLD}/txs"
-        r = requests.get(url, timeout=20)
-        r.raise_for_status()
-        txs = r.json()
 
-        total_btc = 0
+def get_event_queue():
+    return _events
 
-        for tx in txs:
-            for vout in tx.get("vout", []):
-                if vout.get("scriptpubkey_address") == BINANCE_COLD:
-                    btc = vout.get("value", 0) / SATOSHI
-                    total_btc += btc
 
-        return round(total_btc, 4)
+async def mempool_ws_handler():
+    while True:
+        try:
+            logger.info("[MEMPOOL] Connecting…")
 
-    except Exception as e:
-        print("Inflow error:", e)
-        return 0
-        
-def build_cluster():
-    try:
-        url = f"{BLOCKSTREAM}/address/{BINANCE_COLD}/txs"
-        r = requests.get(url, timeout=20)
-        r.raise_for_status()
-        txs = r.json()
+            async with websockets.connect(MEMPOOL_WS, ping_interval=20) as ws:
+                await ws.send(json.dumps({"track-mempool": True}))
+                logger.info("[MEMPOOL] Subscribed to mempool transactions")
 
-        # address -> total BTC volume with cold wallet
-        cluster = {}
+                async for raw in ws:
+                    try:
+                        data = json.loads(raw)
+                    except Exception as e:
+                        logger.warning(f"[MEMPOOL] Failed to parse JSON: {e}")
+                        continue
 
-        for tx in txs:
-            # ------------------
-            # 1) входы В cold
-            # ------------------
-            for vin in tx.get("vin", []):
-                prev = vin.get("prevout")
-                if not prev:
-                    continue
+                    txs = data.get("mempool-transactions", {}).get("added", [])
+                    if not txs:
+                        continue
 
-                addr = prev.get("scriptpubkey_address")
-                value = prev.get("value", 0)
+                    conn = get_db()
+                    c = conn.cursor()
+                    now = int(time.time())
 
-                if addr and value and "scriptpubkey_address" in prev:
-                    # если этот вход пришёл ИЗ какого-то адреса В cold
-                    # мы увидим его как vout cold ниже, но считаем тут тоже
-                    pass
+                    for tx in txs:
+                        try:
+                            txid = tx.get("txid")
+                            if not txid:
+                                continue
 
-            # ------------------
-            # 2) выходы
-            # ------------------
-            for vout in tx.get("vout", []):
-                addr = vout.get("scriptpubkey_address")
-                value = vout.get("value", 0)
+                            vouts = tx.get("vout", [])
+                            total = sum(v["value"] for v in vouts) / SATOSHI
 
-                if not addr or not value:
-                    continue
+                            if total < MIN_WHALE_BTC:
+                                continue
 
-                btc = value / SATOSHI
+                            # === Save whale tx ===
+                            c.execute(
+                                "INSERT OR IGNORE INTO whale_tx (txid, btc, time) VALUES (?, ?, ?)",
+                                (txid, total, now)
+                            )
 
-                # cold -> addr
-                if tx.get("vin"):
-                    for vin in tx["vin"]:
-                        prev = vin.get("prevout")
-                        if prev and prev.get("scriptpubkey_address") == BINANCE_COLD:
-                            if btc >= MIN_BTC:
-                                cluster[addr] = cluster.get(addr, 0) + btc
+                            # === Save outputs & addresses ===
+                            for v in vouts:
+                                addr = v.get("scriptpubkey_address")
+                                if not addr:
+                                    continue
 
-                # addr -> cold
-                if addr == BINANCE_COLD:
-                    for vin in tx.get("vin", []):
-                        prev = vin.get("prevout")
-                        if not prev:
-                            continue
-                        from_addr = prev.get("scriptpubkey_address")
-                        value2 = prev.get("value", 0)
-                        btc2 = value2 / SATOSHI
+                                btc = v["value"] / SATOSHI
 
-                        if from_addr and btc2 >= MIN_BTC:
-                            cluster[from_addr] = cluster.get(from_addr, 0) + btc2
+                                c.execute("""
+                                INSERT OR IGNORE INTO addresses(address, first_seen, last_seen, total_btc)
+                                VALUES (?, ?, ?, 0)
+                                """, (addr, now, now))
 
-        # превращаем в список
-        out = []
-        for addr, vol in cluster.items():
-            out.append({
-                "address": addr,
-                "btc": round(vol, 4)
-            })
+                                c.execute("""
+                                UPDATE addresses
+                                SET last_seen=?, total_btc=total_btc+?
+                                WHERE address=?
+                                """, (now, btc, addr))
 
-        # сортируем по объёму
-        out.sort(key=lambda x: x["btc"], reverse=True)
+                                c.execute(
+                                    "INSERT INTO tx_outputs (txid, address, btc) VALUES (?,?,?)",
+                                    (txid, addr, btc)
+                                )
 
-        return out
+                            conn.commit()
 
-    except Exception as e:
-        print("Cluster build error:", e)
-        return []
+                            whale = {
+                                "txid": txid,
+                                "btc": round(total, 6),
+                                "time": now
+                            }
+
+                            _events.put(whale)
+                            logger.info(f"🐋 Whale detected: {whale['btc']} BTC tx {txid[:12]}…")
+
+                        except Exception as e:
+                            logger.exception(f"TX parse error for txid {tx.get('txid')}: {e}")
+
+                    conn.close()
+
+        except Exception as e:
+            logger.exception(f"[MEMPOOL] WS error: {e}")
+            await asyncio.sleep(5)

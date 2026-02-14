@@ -1,17 +1,39 @@
+let lastPrice = null;
+
 async function load() {
     try {
-        const r = await fetch("/data?t=" + Date.now());
-        const j = await r.json();
+        // whales
+        const wr = await fetch("/whales?t=" + Date.now());
+        const wj = await wr.json();
 
-        document.getElementById("info").innerText =
-            `Cold wallet: ${j.cold_wallet}\nCluster size: ${j.cluster_size}`;
+        // predictions
+        const pr = await fetch("/prediction?t=" + Date.now());
+        const pj = await pr.json();
 
-        let out = "";
-        for (const a of j.addresses) {
-            out += `${a.address}   ${a.btc} BTC\n`;
+        // price
+        const prc = await fetch("/price?t=" + Date.now());
+        const pcj = await prc.json();
+
+        let out = "=== MEMPOOL WHALES ===\n\n";
+
+        if (wj.whales) {
+            for (const x of wj.whales) {
+                out += `${x.btc.toFixed(2)} BTC   ${x.txid.slice(0, 12)}…\n`;
+            }
         }
 
-        document.getElementById("list").innerText = out;
+        let pred = "\n=== AI MARKET FORECAST ===\n";
+
+        for (const horizon in pj) {
+            const row = pj[horizon];
+            const dir = row.pct > 0 ? "⬆" : "⬇";
+
+            pred += `${horizon/60} min  ${dir}  ${row.pct.toFixed(2)}%   → $${row.target.toFixed(0)}\n`;
+        }
+
+        document.getElementById("list").innerText = out + pred;
+        document.getElementById("info").innerText =
+            pcj.price ? `BTC $${pcj.price.toFixed(0)}` : "BTC price…";
 
     } catch (e) {
         document.getElementById("info").innerText = "API error";
@@ -20,3 +42,4 @@ async function load() {
 }
 
 load();
+setInterval(load, 5000);

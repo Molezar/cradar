@@ -18,6 +18,7 @@ instance/
 .webassets-cache
 
 # Logs
+logs/
 *.log
 
 # Environment variables
@@ -51,6 +52,7 @@ secrets.json
 # SQLite / DB
 *.sqlite
 *.db
+*.db-journal
 
 # Coverage
 htmlcov/

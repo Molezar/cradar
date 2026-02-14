@@ -1,11 +1,24 @@
 from dotenv import load_dotenv
 import os
+from pathlib import Path
 
 load_dotenv()
 
-ENV = os.getenv("ENV", "dev")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBAPP_URL = os.getenv("WEBAPP_URL", "http://localhost:8000")
+class Config:
+    ENV = os.getenv("ENV", "DEV").upper()
 
-DEBUG = ENV == "dev"
-IS_PROD = ENV == "prod"
+    if ENV == "PROD":
+        DB_PATH = Path("/data/radar_prod.db")
+    elif ENV == "STAG":
+        DB_PATH = Path("/data/radar_stag.db")
+    else:
+        DB_PATH = Path("database/radar.db")
+
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    ADMIN_ID = int(os.getenv("ADMIN_TELEGRAM_ID", 0))
+    WEBAPP_URL = os.getenv("WEBAPP_URL")
+
+    MIN_WHALE_BTC = float(os.getenv("MIN_WHALE_BTC", "50"))
+    
+    DEBUG = ENV == "DEV"
+    IS_PROD = ENV == "PROD"
