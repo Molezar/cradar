@@ -1,5 +1,10 @@
 let lastPrice = null;
 
+function fmtTime(ts) {
+    const d = new Date(ts * 1000);
+    return d.toLocaleTimeString();
+}
+
 async function load() {
     try {
         // whales
@@ -14,24 +19,30 @@ async function load() {
         const prc = await fetch("/price?t=" + Date.now());
         const pcj = await prc.json();
 
-        let out = "=== MEMPOOL WHALES ===\n\n";
+        let out = "";
 
         if (wj.whales) {
             for (const x of wj.whales) {
-                out += `${x.btc.toFixed(2)} BTC   ${x.txid.slice(0, 12)}…\n`;
+                const t = fmtTime(x.time);
+                const isHuge = x.btc >= 1000;
+
+                const cls = isHuge ? "whale huge" : "whale";
+
+                out += `<div class="${cls}">${t} &nbsp; ${x.btc.toFixed(2)} BTC &nbsp; ${x.txid.slice(0,12)}…</div>`;
             }
         }
 
-        let pred = "\n=== AI MARKET FORECAST ===\n";
+        let pred = "<br><div class='pred'>=== AI MARKET FORECAST ===</div>";
 
         for (const horizon in pj) {
             const row = pj[horizon];
             const dir = row.pct > 0 ? "⬆" : "⬇";
 
-            pred += `${horizon/60} min  ${dir}  ${row.pct.toFixed(2)}%   → $${row.target.toFixed(0)}\n`;
+            pred += `<div>${horizon/60} min ${dir} ${row.pct.toFixed(2)}% → $${row.target.toFixed(0)}</div>`;
         }
 
-        document.getElementById("list").innerText = out + pred;
+        document.getElementById("list").innerHTML = out + pred;
+
         document.getElementById("info").innerText =
             pcj.price ? `BTC $${pcj.price.toFixed(0)}` : "BTC price…";
 

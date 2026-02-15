@@ -8,3 +8,17 @@ body {
 h1 {
     color: #ff9900;
 }
+
+.whale {
+    color: #0f0;
+}
+
+.whale.huge {
+    color: #ff0000;
+    font-weight: bold;
+}
+
+.pred {
+    color: #ff9900;
+    margin-top: 10px;
+}

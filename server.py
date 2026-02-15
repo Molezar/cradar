@@ -170,7 +170,12 @@ def events():
         q = get_event_queue()
         while True:
             tx = q.get()
+
+            # ➜ ДОБАВЛЯЕМ timestamp в SSE
+            tx["ts"] = int(time.time())
+
             yield f"data: {json.dumps(tx)}\n\n"
+
     return Response(stream(), mimetype="text/event-stream")
 
 

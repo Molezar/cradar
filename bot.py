@@ -25,11 +25,7 @@ bot = Bot(
 dp = Dispatcher()
 setup_admin(dp)
 
-# Telegram chat_id подписчиков
 subscribers = set()
-
-
-# ------------------ /start ------------------
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
@@ -43,13 +39,8 @@ async def start(message: types.Message):
         resize_keyboard=True
     )
 
-    try:
-        await message.answer("Crypto Radar 👇", reply_markup=keyboard)
-    except Exception as e:
-        logger.exception(f"Failed to send start message to {message.chat.id}: {e}")
+    await message.answer("Crypto Radar 👇", reply_markup=keyboard)
 
-
-# ------------------ SSE listener ------------------
 
 async def whale_listener():
     await asyncio.sleep(2)
@@ -62,19 +53,14 @@ async def whale_listener():
             async with aiohttp.ClientSession() as session:
                 async with session.get(API + "/events", timeout=None) as resp:
                     async for chunk in resp.content.iter_any():
-                        try:
-                            text = chunk.decode("utf-8", errors="ignore")
-                        except Exception:
-                            continue
 
+                        text = chunk.decode("utf-8", errors="ignore")
                         buffer += text
 
-                        # SSE events разделяются пустой строкой
                         while "\n\n" in buffer:
                             event, buffer = buffer.split("\n\n", 1)
 
-                            lines = event.splitlines()
-                            for line in lines:
+                            for line in event.splitlines():
                                 if not line.startswith("data:"):
                                     continue
 
@@ -84,51 +70,37 @@ async def whale_listener():
 
                                 try:
                                     tx = json.loads(raw)
-                                except Exception as e:
-                                    logger.warning(f"Bad JSON from SSE: {raw} ({e})")
+                                except:
                                     continue
 
-                                # Безопасно достаём поля
-                                btc = tx.get("btc")
+                                btc = float(tx.get("btc", 0))
                                 txid = tx.get("txid")
 
-                                if not btc or not txid:
-                                    logger.warning(f"Incomplete tx data: {tx}")
+                                if not txid:
                                     continue
 
-                                try:
-                                    btc = float(btc)
-                                except:
-                                    logger.warning(f"Invalid btc value: {btc}")
-                                    continue
+                                if btc >= 1000:
+                                    msg = f"🔴 <b>{btc:.2f} BTC</b>\n{txid[:12]}…"
+                                else:
+                                    msg = f"🐋 {btc:.2f} BTC\n{txid[:12]}…"
 
-                                msg = f"🐋 {btc:.2f} BTC\n{txid[:12]}…"
                                 logger.info(f"Whale tx: {btc} BTC {txid}")
 
                                 for cid in list(subscribers):
                                     try:
                                         await bot.send_message(cid, msg)
-                                    except Exception as e:
-                                        logger.warning(f"Failed to send to {cid}: {e}")
+                                    except:
                                         subscribers.discard(cid)
 
         except Exception as e:
-            logger.error(f"SSE connection error: {e}", exc_info=True)
+            logger.error(f"SSE error: {e}")
             await asyncio.sleep(3)
 
 
-# ------------------ main ------------------
-
 async def main():
-    logger.info("Bot main started")
     asyncio.create_task(whale_listener())
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.exception(f"Bot stopped with error: {e}")
+    asyncio.run(main())
