@@ -27,13 +27,18 @@ log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(me
 
 # Получаем root logger
 root_logger = logging.getLogger()
-root_logger.setLevel(logging.DEBUG)
+
+if ENV in ("PROD", "STAG"):
+    root_logger.setLevel(logging.INFO)
+else:
+    root_logger.setLevel(logging.DEBUG)
+
 root_logger.handlers = []  # очищаем старые хендлеры
 
 if ENV in ("PROD", "STAG"):
     # === Продакшен / Стад — stdout/stderr ===
     stdout_handler = logging.StreamHandler(sys.stdout)
-    stdout_handler.setLevel(logging.DEBUG)
+    stdout_handler.setLevel(logging.INFO)
     stdout_handler.addFilter(lambda record: record.levelno < logging.ERROR)
     stdout_handler.setFormatter(ColorFormatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 
@@ -43,11 +48,16 @@ if ENV in ("PROD", "STAG"):
 
     root_logger.addHandler(stdout_handler)
     root_logger.addHandler(stderr_handler)
+    
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+    logging.getLogger("aiohttp").setLevel(logging.WARNING)
+    logging.getLogger("websockets").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("aiogram").setLevel(logging.INFO)
 
 else:
     # === DEV — файл + цветная консоль ===
     os.makedirs("logs", exist_ok=True)
-
     file_handler = RotatingFileHandler(
         "logs/bot.log", maxBytes=5*1024*1024, backupCount=5, encoding="utf-8"
     )

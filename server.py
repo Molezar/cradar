@@ -205,4 +205,9 @@ if __name__ == "__main__":
     threading.Thread(target=trainer, daemon=True).start()
 
     logger.info("Starting Flask server on 0.0.0.0:8000")
-    app.run("0.0.0.0", 8000)
+    port = int(os.environ.get("PORT", 8000))
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=Config.DEBUG
+    )

@@ -1,3 +1,4 @@
+import os
 import asyncio
 import aiohttp
 import json
@@ -15,7 +16,7 @@ logger = get_logger(__name__)
 
 BOT_TOKEN = Config.BOT_TOKEN
 WEBAPP_URL = Config.WEBAPP_URL
-API = "http://127.0.0.1:8000"
+API = "http://127.0.0.1:" + os.environ.get("PORT", "8000")
 
 bot = Bot(
     BOT_TOKEN,
