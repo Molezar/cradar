@@ -22,14 +22,22 @@ def get_event_queue():
 
 
 async def mempool_ws_handler():
+    """Подключение к mempool.space WebSocket с авто-переподключением и обработкой больших фреймов"""
     while True:
         try:
             logger.info("[MEMPOOL] Connecting…")
 
-            async with websockets.connect(MEMPOOL_WS, ping_interval=20) as ws:
+            # Устанавливаем соединение с отключенным лимитом размера сообщений
+            async with websockets.connect(
+                MEMPOOL_WS,
+                ping_interval=20,
+                ping_timeout=10,
+                max_size=None
+            ) as ws:
                 await ws.send(json.dumps({"track-mempool": True}))
                 logger.info("[MEMPOOL] Subscribed to mempool transactions")
 
+                # Цикл получения сообщений
                 async for raw in ws:
                     try:
                         data = json.loads(raw)
@@ -103,6 +111,9 @@ async def mempool_ws_handler():
 
                     conn.close()
 
+        except websockets.ConnectionClosedError as e:
+            logger.warning(f"[MEMPOOL] WS closed: {e}. Reconnecting in 5s…")
+            await asyncio.sleep(5)
         except Exception as e:
-            logger.exception(f"[MEMPOOL] WS error: {e}")
+            logger.exception(f"[MEMPOOL] WS error: {e}. Reconnecting in 5s…")
             await asyncio.sleep(5)
