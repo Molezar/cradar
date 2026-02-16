@@ -16,41 +16,118 @@ SATOSHI = 100_000_000
 
 _events = queue.Queue()
 
-
 def get_event_queue():
     return _events
 
 
+# ================================
+# Cluster & Exchange Resolution
+# ================================
+
+def get_cluster(address, cursor):
+    r = cursor.execute("""
+        SELECT ec.id as cluster,
+               ec.exchange,
+               ac.confidence
+        FROM address_cluster ac
+        JOIN exchange_clusters ec ON ec.id = ac.cluster_id
+        WHERE ac.address = ?
+    """, (address,)).fetchone()
+
+    if not r:
+        return None, None, 0
+
+    return r["cluster"], r["exchange"], r["confidence"]
+
+
+def get_input_map(tx):
+    m = {}
+    for vin in tx.get("vin", []):
+        prev = vin.get("prevout", {})
+        addr = prev.get("scriptpubkey_address")
+        val = prev.get("value", 0) / SATOSHI
+        if addr and val > 0:
+            m[addr] = m.get(addr, 0) + val
+    return m
+
+
+def get_output_map(tx):
+    m = {}
+    for v in tx.get("vout", []):
+        addr = v.get("scriptpubkey_address")
+        val = v.get("value", 0) / SATOSHI
+        if addr and val > 0:
+            m[addr] = m.get(addr, 0) + val
+    return m
+
+
+# ================================
+# Flow classification
+# ================================
+
+def classify_flow(inputs, outputs, cursor):
+    ex_in = {}
+    ex_out = {}
+
+    for addr, btc in inputs.items():
+        _, ex, conf = get_cluster(addr, cursor)
+        if ex and conf > 0.6:
+            ex_in[ex] = ex_in.get(ex, 0) + btc
+
+    for addr, btc in outputs.items():
+        _, ex, conf = get_cluster(addr, cursor)
+        if ex and conf > 0.6:
+            ex_out[ex] = ex_out.get(ex, 0) + btc
+
+    if not ex_in and not ex_out:
+        return None, "OTC", 0
+
+    for ex in ex_in:
+        if ex in ex_out:
+            return ex, "INTERNAL", min(ex_in[ex], ex_out[ex])
+
+    for ex in ex_out:
+        if ex not in ex_in:
+            return ex, "DEPOSIT", ex_out[ex]
+
+    for ex in ex_in:
+        if ex not in ex_out:
+            return ex, "WITHDRAWAL", ex_in[ex]
+
+    return None, "OTC", 0
+
+
+# ================================
+# WebSocket
+# ================================
+
 async def mempool_ws_handler():
-    """Подключение к mempool.space WebSocket с авто-переподключением и обработкой больших фреймов"""
     while True:
         try:
             logger.info("[MEMPOOL] Connecting…")
 
-            # Устанавливаем соединение с отключенным лимитом размера сообщений
             async with websockets.connect(
                 MEMPOOL_WS,
                 ping_interval=20,
                 ping_timeout=10,
-                max_size=None
+                max_size=2_000_000
             ) as ws:
-                await ws.send(json.dumps({"track-mempool": True}))
-                logger.info("[MEMPOOL] Subscribed to mempool transactions")
 
-                # Цикл получения сообщений
+                await ws.send(json.dumps({"track-mempool": True}))
+                logger.info("[MEMPOOL] Subscribed")
+
                 async for raw in ws:
                     try:
                         data = json.loads(raw)
-                    except Exception as e:
-                        logger.warning(f"[MEMPOOL] Failed to parse JSON: {e}")
+                    except:
                         continue
 
                     txs = data.get("mempool-transactions", {}).get("added", [])
                     if not txs:
                         continue
 
-                    conn = get_db()
-                    c = conn.cursor()
+                    db = get_db()
+                    c = db.cursor()
                     now = int(time.time())
 
                     for tx in txs:
@@ -59,61 +136,52 @@ async def mempool_ws_handler():
                             if not txid:
                                 continue
 
-                            vouts = tx.get("vout", [])
-                            total = sum(v["value"] for v in vouts) / SATOSHI
+                            inputs = get_input_map(tx)
+                            outputs = get_output_map(tx)
 
+                            total = sum(outputs.values())
                             if total < MIN_WHALE_BTC:
                                 continue
 
-                            # === Save whale tx ===
-                            c.execute(
-                                "INSERT OR IGNORE INTO whale_tx (txid, btc, time) VALUES (?, ?, ?)",
-                                (txid, total, now)
-                            )
+                            exchange, flow_type, flow_btc = classify_flow(inputs, outputs, c)
 
-                            # === Save outputs & addresses ===
-                            for v in vouts:
-                                addr = v.get("scriptpubkey_address")
-                                if not addr:
-                                    continue
+                            c.execute("""
+                                INSERT OR IGNORE INTO whale_tx(txid, btc, time)
+                                VALUES (?,?,?)
+                            """, (txid, total, now))
 
-                                btc = v["value"] / SATOSHI
+                            c.execute("""
+                                INSERT OR IGNORE INTO whale_classification
+                                (txid, flow_type, exchange, btc, time)
+                                VALUES (?,?,?,?,?)
+                            """, (txid, flow_type, exchange, flow_btc, now))
 
+                            if exchange:
                                 c.execute("""
-                                INSERT OR IGNORE INTO addresses(address, first_seen, last_seen, total_btc)
-                                VALUES (?, ?, ?, 0)
-                                """, (addr, now, now))
+                                    INSERT INTO exchange_flow_v2(ts, exchange, flow_type, btc)
+                                    VALUES (?, ?, ?, ?)
+                                    ON CONFLICT(ts, exchange, flow_type) DO UPDATE SET
+                                    btc = btc + excluded.btc
+                                """, (now, exchange, flow_type, flow_btc))
 
-                                c.execute("""
-                                UPDATE addresses
-                                SET last_seen=?, total_btc=total_btc+?
-                                WHERE address=?
-                                """, (now, btc, addr))
+                            db.commit()
 
-                                c.execute(
-                                    "INSERT INTO tx_outputs (txid, address, btc) VALUES (?,?,?)",
-                                    (txid, addr, btc)
-                                )
-
-                            conn.commit()
-
-                            whale = {
+                            event = {
                                 "txid": txid,
-                                "btc": round(total, 6),
+                                "btc": round(flow_btc, 4),
+                                "flow": flow_type,
+                                "exchange": exchange,
                                 "time": now
                             }
 
-                            _events.put(whale)
-                            logger.info(f"🐋 Whale detected: {whale['btc']} BTC tx {txid[:12]}…")
+                            _events.put(event)
+                            logger.info(f"🐋 {flow_type} {flow_btc:.2f} BTC {exchange or ''}")
 
                         except Exception as e:
-                            logger.exception(f"TX parse error for txid {tx.get('txid')}: {e}")
+                            logger.exception(f"TX error {tx.get('txid')}: {e}")
 
-                    conn.close()
+                    db.close()
 
-        except websockets.ConnectionClosedError as e:
-            logger.warning(f"[MEMPOOL] WS closed: {e}. Reconnecting in 5s…")
-            await asyncio.sleep(5)
         except Exception as e:
-            logger.exception(f"[MEMPOOL] WS error: {e}. Reconnecting in 5s…")
+            logger.exception(f"[MEMPOOL] WS error: {e}")
             await asyncio.sleep(5)

@@ -57,5 +57,5 @@ def run_migrations():
     conn.close()
     print("🚀 Migrations finished.")
 
-if __name__ == "main":
+if __name__ == "__main__":
     run_migrations()

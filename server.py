@@ -6,9 +6,11 @@ import asyncio
 import json
 import time
 import requests
+
 from config import Config
 from database.database import get_db, init_db
 from onchain import mempool_ws_handler, get_event_queue
+from exchange_clustering import run_clustering
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -39,7 +41,10 @@ def price_sampler():
             price = fetch_btc_price()
             if price:
                 db = get_db()
-                db.execute("INSERT OR IGNORE INTO btc_price(ts, price) VALUES (?,?)", (int(time.time()), price))
+                db.execute(
+                    "INSERT OR IGNORE INTO btc_price(ts, price) VALUES (?,?)",
+                    (int(time.time()), price)
+                )
                 db.commit()
                 db.close()
                 logger.debug(f"Sampled BTC price: {price}")
@@ -48,27 +53,39 @@ def price_sampler():
         time.sleep(30)
 
 
-# ------------------ Whale flow sampler ------------------
+# ------------------ Exchange flow sampler ------------------
+# This replaces whale_flow_sampler
 
-def whale_flow_sampler():
+def exchange_flow_sampler():
     while True:
         try:
             now = int(time.time())
             since = now - 600
 
             db = get_db()
-            r = db.execute("SELECT SUM(btc) as total FROM whale_tx WHERE time > ?", (since,)).fetchone()
-            total = r["total"] or 0
 
-            db.execute("INSERT OR REPLACE INTO whale_flow(ts, total_btc) VALUES (?,?)", (now, total))
+            buy = db.execute("""
+                SELECT SUM(btc) FROM whale_classification
+                WHERE time > ? AND flow_type='DEPOSIT'
+            """, (since,)).fetchone()[0] or 0
+
+            sell = db.execute("""
+                SELECT SUM(btc) FROM whale_classification
+                WHERE time > ? AND flow_type='WITHDRAWAL'
+            """, (since,)).fetchone()[0] or 0
+
+            db.execute("""
+                INSERT OR REPLACE INTO exchange_flow(ts, buy_btc, sell_btc)
+                VALUES (?,?,?)
+            """, (now, buy, sell))
+
             db.commit()
             db.close()
 
-            logger.debug(f"Whale flow updated: {total} BTC in last 10 min")
         except Exception as e:
-            logger.exception(f"Error in whale_flow_sampler: {e}")
-        time.sleep(60)
+            logger.exception(e)
 
+        time.sleep(60)
 
 # ------------------ Trainer ------------------
 
@@ -79,30 +96,60 @@ def trainer():
 
             for w in WINDOWS:
                 now = int(time.time())
-                p1 = db.execute("SELECT price FROM btc_price WHERE ts < ? ORDER BY ts DESC LIMIT 1", (now,)).fetchone()
-                p0 = db.execute("SELECT price FROM btc_price WHERE ts < ? ORDER BY ts DESC LIMIT 1", (now - w,)).fetchone()
+
+                p1 = db.execute(
+                    "SELECT price FROM btc_price WHERE ts < ? ORDER BY ts DESC LIMIT 1",
+                    (now,)
+                ).fetchone()
+
+                p0 = db.execute(
+                    "SELECT price FROM btc_price WHERE ts < ? ORDER BY ts DESC LIMIT 1",
+                    (now - w,)
+                ).fetchone()
 
                 if not p0 or not p1:
                     continue
 
                 dp = (p1["price"] - p0["price"]) / p0["price"]
-                flow = db.execute("SELECT SUM(total_btc) as s FROM whale_flow WHERE ts > ?", (now - w,)).fetchone()["s"] or 0
 
-                row = db.execute("SELECT weight, samples FROM whale_correlation WHERE window=?", (w,)).fetchone()
+                row = db.execute("""
+                    SELECT SUM(buy_btc) as b, SUM(sell_btc) as s
+                    FROM exchange_flow
+                    WHERE ts > ?
+                """, (now - w,)).fetchone()
 
-                if row:
-                    weight = row["weight"]
-                    samples = row["samples"]
-                    new_weight = (weight * samples + dp / (flow + 1)) / (samples + 1)
-                    db.execute("UPDATE whale_correlation SET weight=?, samples=? WHERE window=?", (new_weight, samples + 1, w))
+                buy = row["b"] or 0
+                sell = row["s"] or 0
+
+                net_flow = buy - sell
+
+                corr = db.execute(
+                    "SELECT weight, samples FROM whale_correlation WHERE window=?",
+                    (w,)
+                ).fetchone()
+
+                if corr:
+                    weight = corr["weight"]
+                    samples = corr["samples"]
+                    new_weight = (weight * samples + (dp / (abs(net_flow) + 1))) / (samples + 1)
+                    db.execute(
+                        "UPDATE whale_correlation SET weight=?, samples=? WHERE window=?",
+                        (new_weight, samples + 1, w)
+                    )
                 else:
-                    new_weight = dp / (flow + 1)
-                    db.execute("INSERT INTO whale_correlation VALUES (?,?,1)", (w, new_weight))
+                    new_weight = dp / (abs(net_flow) + 1)
+                    db.execute(
+                        "INSERT INTO whale_correlation VALUES (?,?,1)",
+                        (w, new_weight)
+                    )
 
-                logger.debug(f"Trainer updated window {w}: dp={dp:.6f}, flow={flow}, new weight={new_weight:.6f}")
+                logger.debug(
+                    f"Trainer {w}s: dp={dp:.6f}, net_flow={net_flow:.2f}, weight={new_weight:.6f}"
+                )
 
             db.commit()
             db.close()
+
         except Exception as e:
             logger.exception(f"Error in trainer: {e}")
 
@@ -115,19 +162,35 @@ def trainer():
 def whales():
     try:
         db = get_db()
-        rows = db.execute("SELECT txid, btc, time FROM whale_tx ORDER BY time DESC LIMIT 50").fetchall()
+        rows = db.execute("""
+            SELECT
+                txid,
+                btc,
+                time,
+                flow_type as flow,
+                exchange
+            FROM whale_classification
+            ORDER BY time DESC
+            LIMIT 50
+        """).fetchall()
         db.close()
-        return jsonify({"count": len(rows), "whales": [dict(r) for r in rows]})
+
+        return jsonify({
+            "count": len(rows),
+            "whales": [dict(r) for r in rows]
+        })
+
     except Exception as e:
         logger.exception(f"Error in /whales endpoint: {e}")
         return jsonify({"error": "Internal server error"}), 500
-
 
 @app.route("/price")
 def price():
     try:
         db = get_db()
-        r = db.execute("SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1").fetchone()
+        r = db.execute(
+            "SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1"
+        ).fetchone()
         db.close()
         return jsonify({"price": r["price"] if r else None})
     except Exception as e:
@@ -139,7 +202,9 @@ def price():
 def prediction():
     try:
         db = get_db()
-        price_row = db.execute("SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1").fetchone()
+        price_row = db.execute(
+            "SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1"
+        ).fetchone()
         if not price_row:
             return jsonify({})
 
@@ -147,7 +212,10 @@ def prediction():
         out = {}
 
         for w in WINDOWS:
-            r = db.execute("SELECT weight FROM whale_correlation WHERE window=?", (w,)).fetchone()
+            r = db.execute(
+                "SELECT weight FROM whale_correlation WHERE window=?",
+                (w,)
+            ).fetchone()
             if not r:
                 continue
 
@@ -159,6 +227,7 @@ def prediction():
 
         db.close()
         return jsonify(out)
+
     except Exception as e:
         logger.exception(f"Error in /prediction endpoint: {e}")
         return jsonify({"error": "Internal server error"}), 500
@@ -170,10 +239,7 @@ def events():
         q = get_event_queue()
         while True:
             tx = q.get()
-
-            # ➜ ДОБАВЛЯЕМ timestamp в SSE
             tx["ts"] = int(time.time())
-
             yield f"data: {json.dumps(tx)}\n\n"
 
     return Response(stream(), mimetype="text/event-stream")
@@ -197,6 +263,15 @@ def start_ws():
     loop.run_until_complete(mempool_ws_handler())
 
 
+def clustering_loop():
+    while True:
+        try:
+            run_clustering()
+        except Exception as e:
+            logger.exception(f"[CLUSTER] loop error: {e}")
+        time.sleep(1800)
+
+
 if __name__ == "__main__":
     db_path = Config.DB_PATH
     db_path.parent.mkdir(exist_ok=True, parents=True)
@@ -204,15 +279,12 @@ if __name__ == "__main__":
         logger.info(f"Database not found at {db_path}, initializing new one")
         init_db()
 
+    threading.Thread(target=clustering_loop, daemon=True).start()
     threading.Thread(target=start_ws, daemon=True).start()
     threading.Thread(target=price_sampler, daemon=True).start()
-    threading.Thread(target=whale_flow_sampler, daemon=True).start()
+    threading.Thread(target=exchange_flow_sampler, daemon=True).start()
     threading.Thread(target=trainer, daemon=True).start()
 
     logger.info("Starting Flask server on 0.0.0.0:8000")
     port = int(os.environ.get("PORT", 8000))
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=Config.DEBUG
-    )
+    app.run(host="0.0.0.0", port=port, debug=Config.DEBUG)

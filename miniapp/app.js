@@ -28,7 +28,13 @@ async function load() {
 
                 const cls = isHuge ? "whale huge" : "whale";
 
-                out += `<div class="${cls}">${t} &nbsp; ${x.btc.toFixed(2)} BTC &nbsp; ${x.txid.slice(0,12)}…</div>`;
+                let dir = "";
+                if (x.flow === "DEPOSIT") dir = "→ EXCHANGE";
+                if (x.flow === "WITHDRAWAL") dir = "← EXCHANGE";
+                
+                out += `<div class="${cls}">
+                ${t} &nbsp; ${x.btc.toFixed(2)} BTC ${dir} ${x.exchange || ""}
+                </div>`;
             }
         }
 

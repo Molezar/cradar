@@ -39,8 +39,12 @@ async def start(message: types.Message):
         resize_keyboard=True
     )
 
-    await message.answer("Crypto Radar 👇", reply_markup=keyboard)
+    await message.answer("🧠 <b>Crypto Radar activated</b>\nWhale flow alerts enabled 👇", reply_markup=keyboard)
 
+
+# ========================================
+# Whale flow listener
+# ========================================
 
 async def whale_listener():
     await asyncio.sleep(2)
@@ -75,16 +79,43 @@ async def whale_listener():
 
                                 btc = float(tx.get("btc", 0))
                                 txid = tx.get("txid")
+                                flow = tx.get("flow")
+                                exchange = tx.get("exchange")
 
-                                if not txid:
+                                if not txid or btc <= 0:
                                     continue
 
-                                if btc >= 1000:
-                                    msg = f"🔴 <b>{btc:.2f} BTC</b>\n{txid[:12]}…"
-                                else:
-                                    msg = f"🐋 {btc:.2f} BTC\n{txid[:12]}…"
+                                # -----------------------------
+                                # Message logic
+                                # -----------------------------
 
-                                logger.info(f"Whale tx: {btc} BTC {txid}")
+                                if flow == "DEPOSIT":
+                                    emoji = "🔴"
+                                    title = "SELL pressure"
+                                    direction = "→ Exchange"
+                                elif flow == "WITHDRAWAL":
+                                    emoji = "🟢"
+                                    title = "ACCUMULATION"
+                                    direction = "← Exchange"
+                                elif flow == "INTERNAL":
+                                    emoji = "🟡"
+                                    title = "Internal move"
+                                    direction = "↔"
+                                else:
+                                    emoji = "⚪"
+                                    title = "OTC"
+                                    direction = ""
+
+                                size = "HUGE" if btc >= 1000 else "Whale"
+
+                                msg = (
+                                    f"{emoji} <b>{title}</b>\n"
+                                    f"{size}: <b>{btc:.2f} BTC</b>\n"
+                                    f"{direction} <b>{exchange or 'Unknown'}</b>\n"
+                                    f"<code>{txid[:16]}…</code>"
+                                )
+
+                                logger.info(f"{flow} {btc} BTC {exchange}")
 
                                 for cid in list(subscribers):
                                     try:

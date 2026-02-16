@@ -1,5 +1,6 @@
 from aiogram import types
 from logger import get_logger
+from database import init_db
 from config import Config
 from .keyboards import (
     get_admin_main_kb,
@@ -48,6 +49,23 @@ async def handle_admin_callbacks(callback: types.CallbackQuery):
         elif data == "admin:view_volume":
             await handle_view_volume(callback)
 
+        elif data == "admin:recreate_db_confirm":
+            await callback.message.edit_text(
+                "Вы действительно хотите пересоздать базу данных? ⚠️ Все данные будут потеряны!",
+                reply_markup=get_recreate_db_confirm_kb()
+            )
+        elif data == "admin:recreate_db":
+            # Пересоздание БД
+            try:
+                db_path = Config.DB_PATH
+                if db_path.exists():
+                    db_path.unlink()  # удаляем старую БД
+                init_db()  # создаём новую
+                await callback.message.edit_text("✅ База данных успешно пересоздана!", reply_markup=get_admin_main_kb())
+            except Exception as e:
+                logger.exception(e)
+                await callback.message.edit_text("❌ Ошибка при пересоздании БД", reply_markup=get_admin_main_kb())
+        
         elif data == "admin_main":
             await callback.message.edit_text(
                 "👑 Админ-панель",
