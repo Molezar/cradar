@@ -4,6 +4,8 @@ import aiohttp
 import json
 import sqlite3
 import time
+import ssl
+import certifi
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -14,12 +16,31 @@ from config import Config
 from logger import get_logger
 from admin import setup_admin
 
+# -------------------------
+# Debug prints
+# -------------------------
+print("ENV:", Config.ENV)
+print("API_URL:", Config.API_URL)
+print("WEBAPP_URL:", Config.WEBAPP_URL)
+print("PORT:", os.environ.get("PORT"))
+
 logger = get_logger(__name__)
 
 BOT_TOKEN = Config.BOT_TOKEN
 WEBAPP_URL = Config.WEBAPP_URL
 
-API = Config.API_URL or "http://127.0.0.1:" + os.environ.get("PORT", "8000")
+# -------------------------
+# API endpoint selection
+# -------------------------
+if Config.IS_PROD:
+    API = os.getenv("API_URL")
+    if not API:
+        raise ValueError("API_URL env variable is missing on PROD!")
+    # SSL context для HTTPS на проде
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+else:
+    API = "http://127.0.0.1:" + os.environ.get("PORT", "8000")
+    ssl_context = None  # локально SSL не нужен
 
 MIN_WHALE_BTC = Config.MIN_WHALE_BTC
 ALERT_WHALE_BTC = Config.ALERT_WHALE_BTC
@@ -33,7 +54,9 @@ setup_admin(dp)
 
 subscribers = set()
 
-
+# -------------------------
+# /start command
+# -------------------------
 @dp.message(Command("start"))
 async def start(message: types.Message):
     subscribers.add(message.chat.id)
@@ -51,11 +74,9 @@ async def start(message: types.Message):
         reply_markup=keyboard
     )
 
-
 # ========================================
 # Whale flow listener
 # ========================================
-
 async def whale_listener():
     await asyncio.sleep(2)
     logger.info("Starting whale_listener SSE task")
@@ -65,7 +86,7 @@ async def whale_listener():
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(API + "/events", timeout=None) as resp:
+                async with session.get(API + "/events", timeout=None, ssl=ssl_context) as resp:
                     async for chunk in resp.content.iter_any():
                         text = chunk.decode("utf-8", errors="ignore")
                         buffer += text
@@ -101,7 +122,6 @@ async def whale_listener():
                                 alert_msg = None
 
                                 if send_alert:
-                                    # Попробуем подтянуть биржу и направление из БД
                                     try:
                                         db = sqlite3.connect(Config.DB_PATH)
                                         db.row_factory = sqlite3.Row
@@ -189,7 +209,9 @@ async def whale_listener():
             logger.error(f"SSE error: {e}")
             await asyncio.sleep(3)
 
-
+# ============================
+# Main
+# ============================
 async def main():
     asyncio.create_task(whale_listener())
     await dp.start_polling(bot)
