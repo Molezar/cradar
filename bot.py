@@ -18,7 +18,8 @@ logger = get_logger(__name__)
 
 BOT_TOKEN = Config.BOT_TOKEN
 WEBAPP_URL = Config.WEBAPP_URL
-API = "http://127.0.0.1:" + os.environ.get("PORT", "8000")
+
+API = Config.API_URL or "http://127.0.0.1:" + os.environ.get("PORT", "8000")
 
 MIN_WHALE_BTC = Config.MIN_WHALE_BTC
 ALERT_WHALE_BTC = Config.ALERT_WHALE_BTC

@@ -17,7 +17,7 @@ class Config:
     BOT_TOKEN = os.getenv("BOT_TOKEN")
     ADMIN_ID = int(os.getenv("ADMIN_TELEGRAM_ID", 0))
     WEBAPP_URL = os.getenv("WEBAPP_URL")
-
+    API_URL = os.getenv("API_URL")
     MIN_WHALE_BTC = float(os.getenv("MIN_WHALE_BTC", "50"))
     ALERT_WHALE_BTC = float(os.getenv("ALERT_WHALE_BTC", "3000"))
     
