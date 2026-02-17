@@ -1,5 +1,8 @@
 let lastPrice = null;
 
+// Хранение алертов, чтобы не дублировать
+const alertsDisplayed = new Set();
+
 function fmtTime(ts) {
     const d = new Date(ts * 1000);
     return d.toLocaleTimeString();
@@ -31,7 +34,8 @@ async function load() {
                 let dir = "";
                 if (x.flow === "DEPOSIT") dir = "→ EXCHANGE";
                 if (x.flow === "WITHDRAWAL") dir = "← EXCHANGE";
-                
+                if (x.flow === "INTERNAL") dir = "↔";
+
                 out += `<div class="${cls}">
                 ${t} &nbsp; ${x.btc.toFixed(2)} BTC ${dir} ${x.exchange || ""}
                 </div>`;
@@ -58,5 +62,48 @@ async function load() {
     }
 }
 
+// ==========================
+// SSE для алертов по ALERT_WHALE_BTC
+// ==========================
+
+function startAlerts() {
+    const evtSource = new EventSource("/events");
+
+    evtSource.onmessage = (e) => {
+        try {
+            const tx = JSON.parse(e.data);
+            // фильтруем по ALERT_WHALE_BTC
+            if (tx.btc >= parseFloat(ALERT_WHALE_BTC || "3000")) {
+                const key = tx.txid;
+                if (alertsDisplayed.has(key)) return; // уже показано
+                alertsDisplayed.add(key);
+
+                const t = fmtTime(tx.time);
+                let msg = `${t} &nbsp; ${tx.btc.toFixed(2)} BTC`;
+
+                if (tx.exchange) {
+                    let dir = "";
+                    if (tx.flow === "DEPOSIT") dir = "→ Exchange";
+                    if (tx.flow === "WITHDRAWAL") dir = "← Exchange";
+                    if (tx.flow === "INTERNAL") dir = "↔";
+
+                    msg += ` ${dir} ${tx.exchange}`;
+                }
+
+                const alertsDiv = document.getElementById("alerts");
+                if (alertsDiv) {
+                    const div = document.createElement("div");
+                    div.className = "alert";
+                    div.innerHTML = msg;
+                    alertsDiv.prepend(div);
+                }
+            }
+        } catch (err) {
+            console.error("Alert parsing error:", err);
+        }
+    };
+}
+
 load();
 setInterval(load, 5000);
+startAlerts();

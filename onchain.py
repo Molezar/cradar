@@ -10,7 +10,8 @@ from logger import get_logger
 
 logger = get_logger(__name__)
 
-MIN_WHALE_BTC = Config.MIN_WHALE_BTC
+MIN_WHALE_BTC = Config.MIN_WHALE_BTC          # for learning
+ALERT_WHALE_BTC = Config.ALERT_WHALE_BTC      # for alerts
 MEMPOOL_WS = "wss://mempool.space/api/v1/ws"
 SATOSHI = 100_000_000
 
@@ -110,7 +111,7 @@ async def mempool_ws_handler():
                 MEMPOOL_WS,
                 ping_interval=20,
                 ping_timeout=10,
-                max_size=2_000_000
+                max_size=None
             ) as ws:
 
                 await ws.send(json.dumps({"track-mempool": True}))
@@ -138,44 +139,57 @@ async def mempool_ws_handler():
 
                             inputs = get_input_map(tx)
                             outputs = get_output_map(tx)
-
                             total = sum(outputs.values())
-                            if total < MIN_WHALE_BTC:
-                                continue
 
-                            exchange, flow_type, flow_btc = classify_flow(inputs, outputs, c)
+                            # -------------------------------
+                            # LEARNING (MIN_WHALE_BTC)
+                            # -------------------------------
+                            if total >= MIN_WHALE_BTC:
+                                exchange, flow_type, flow_btc = classify_flow(inputs, outputs, c)
 
-                            c.execute("""
-                                INSERT OR IGNORE INTO whale_tx(txid, btc, time)
-                                VALUES (?,?,?)
-                            """, (txid, total, now))
-
-                            c.execute("""
-                                INSERT OR IGNORE INTO whale_classification
-                                (txid, flow_type, exchange, btc, time)
-                                VALUES (?,?,?,?,?)
-                            """, (txid, flow_type, exchange, flow_btc, now))
-
-                            if exchange:
                                 c.execute("""
-                                    INSERT INTO exchange_flow_v2(ts, exchange, flow_type, btc)
-                                    VALUES (?, ?, ?, ?)
-                                    ON CONFLICT(ts, exchange, flow_type) DO UPDATE SET
-                                    btc = btc + excluded.btc
-                                """, (now, exchange, flow_type, flow_btc))
+                                    INSERT OR IGNORE INTO whale_tx(txid, btc, time)
+                                    VALUES (?,?,?)
+                                """, (txid, total, now))
 
-                            db.commit()
+                                c.execute("""
+                                    INSERT OR IGNORE INTO whale_classification
+                                    (txid, flow_type, exchange, btc, time)
+                                    VALUES (?,?,?,?,?)
+                                """, (txid, flow_type, exchange, flow_btc, now))
 
-                            event = {
-                                "txid": txid,
-                                "btc": round(flow_btc, 4),
-                                "flow": flow_type,
-                                "exchange": exchange,
-                                "time": now
-                            }
+                                if exchange:
+                                    c.execute("""
+                                        INSERT INTO exchange_flow_v2(ts, exchange, flow_type, btc)
+                                        VALUES (?, ?, ?, ?)
+                                        ON CONFLICT(ts, exchange, flow_type) DO UPDATE SET
+                                        btc = btc + excluded.btc
+                                    """, (now, exchange, flow_type, flow_btc))
 
-                            _events.put(event)
-                            logger.info(f"🐋 {flow_type} {flow_btc:.2f} BTC {exchange or ''}")
+                                db.commit()
+
+                            # -------------------------------
+                            # ALERTS (ALERT_WHALE_BTC)
+                            # -------------------------------
+                            if total >= ALERT_WHALE_BTC:
+                                exchange, flow_type, flow_btc = classify_flow(inputs, outputs, c)
+
+                                if flow_btc <= 0:
+                                    flow_btc = total
+
+                                event = {
+                                    "txid": txid,
+                                    "btc": round(flow_btc, 4),
+                                    "flow": flow_type if exchange else None,
+                                    "exchange": exchange,
+                                    "time": now
+                                }
+
+                                _events.put(event)
+
+                                logger.info(
+                                    f"🚨 ALERT {flow_type or 'WHALE'} {flow_btc:.2f} BTC {exchange or ''}"
+                                )
 
                         except Exception as e:
                             logger.exception(f"TX error {tx.get('txid')}: {e}")

@@ -1,12 +1,13 @@
 from aiogram import types
 from logger import get_logger
-from database import init_db
+from database.database import init_db
 from config import Config
 from .keyboards import (
     get_admin_main_kb,
     get_admin_to_main_bt,
     get_download_db_confirm_kb,
-    get_download_migrations_log_confirm_kb
+    get_download_migrations_log_confirm_kb,
+    get_recreate_db_confirm_kb
 )
 from admin.main.callbacks import (
     handle_download_db,

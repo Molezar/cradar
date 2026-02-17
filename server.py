@@ -47,14 +47,12 @@ def price_sampler():
                 )
                 db.commit()
                 db.close()
-                logger.debug(f"Sampled BTC price: {price}")
         except Exception as e:
             logger.exception(f"Error in price_sampler: {e}")
         time.sleep(30)
 
 
 # ------------------ Exchange flow sampler ------------------
-# This replaces whale_flow_sampler
 
 def exchange_flow_sampler():
     while True:
@@ -86,6 +84,7 @@ def exchange_flow_sampler():
             logger.exception(e)
 
         time.sleep(60)
+
 
 # ------------------ Trainer ------------------
 
@@ -143,10 +142,6 @@ def trainer():
                         (w, new_weight)
                     )
 
-                logger.debug(
-                    f"Trainer {w}s: dp={dp:.6f}, net_flow={net_flow:.2f}, weight={new_weight:.6f}"
-                )
-
             db.commit()
             db.close()
 
@@ -170,9 +165,10 @@ def whales():
                 flow_type as flow,
                 exchange
             FROM whale_classification
+            WHERE btc >= ?
             ORDER BY time DESC
             LIMIT 50
-        """).fetchall()
+        """, (Config.ALERT_WHALE_BTC,)).fetchall()
         db.close()
 
         return jsonify({
@@ -183,6 +179,7 @@ def whales():
     except Exception as e:
         logger.exception(f"Error in /whales endpoint: {e}")
         return jsonify({"error": "Internal server error"}), 500
+
 
 @app.route("/price")
 def price():
