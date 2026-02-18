@@ -41,6 +41,70 @@ def get_cluster(address, cursor):
     return r["cluster"], r["exchange"], r["confidence"]
 
 
+# ================================
+# Exchange propagation engine
+# ================================
+
+def propagate_clusters(txid, inputs, outputs, cursor):
+    involved = set()
+
+    # detect known exchanges involved
+    for addr in list(inputs.keys()) + list(outputs.keys()):
+        _, ex, conf = get_cluster(addr, cursor)
+        if ex and conf > 0.6:
+            involved.add(ex)
+
+    if not involved:
+        return
+
+    # learn all counterparties as part of those exchanges
+    for addr in list(inputs.keys()) + list(outputs.keys()):
+        for ex in involved:
+            row = cursor.execute("""
+                SELECT id FROM exchange_clusters WHERE exchange=?
+            """, (ex,)).fetchone()
+
+            if not row:
+                continue
+
+            cluster_id = row["id"]
+
+            existing = cursor.execute("""
+                SELECT cluster_id, confidence FROM address_cluster WHERE address=?
+            """, (addr,)).fetchone()
+
+            if existing:
+                # same exchange → reinforce
+                if existing["cluster_id"] == cluster_id:
+                    cursor.execute("""
+                        UPDATE address_cluster
+                        SET confidence = MIN(1.0, confidence + 0.1)
+                        WHERE address=?
+                    """, (addr,))
+                else:
+                    # competing exchange → switch if weak
+                    if existing["confidence"] < 0.6:
+                        cursor.execute("""
+                            UPDATE address_cluster
+                            SET cluster_id=?, confidence=0.4
+                            WHERE address=?
+                        """, (cluster_id, addr))
+            else:
+                cursor.execute("""
+                    INSERT INTO address_cluster(address, cluster_id, confidence)
+                    VALUES (?,?,0.3)
+                """, (addr, cluster_id))
+
+            cursor.execute("""
+                INSERT OR IGNORE INTO exchange_addresses(address, exchange, is_anchor, score)
+                VALUES (?,?,0,0.3)
+            """, (addr, ex))
+
+
+# ================================
+# Input / Output parsing
+# ================================
+
 def get_input_map(tx):
     m = {}
     for vin in tx.get("vin", []):
@@ -141,10 +205,21 @@ async def mempool_ws_handler():
                             outputs = get_output_map(tx)
                             total = sum(outputs.values())
 
+                            # store outputs
+                            for addr, btc in outputs.items():
+                                c.execute("""
+                                    INSERT INTO tx_outputs(txid,address,btc)
+                                    VALUES (?,?,?)
+                                """, (txid, addr, btc))
+
                             # -------------------------------
-                            # LEARNING (MIN_WHALE_BTC)
+                            # LEARNING
                             # -------------------------------
                             if total >= MIN_WHALE_BTC:
+                                # 1) first learn clusters
+                                propagate_clusters(txid, inputs, outputs, c)
+
+                                # 2) then classify using updated clusters
                                 exchange, flow_type, flow_btc = classify_flow(inputs, outputs, c)
 
                                 c.execute("""
@@ -169,7 +244,7 @@ async def mempool_ws_handler():
                                 db.commit()
 
                             # -------------------------------
-                            # ALERTS (ALERT_WHALE_BTC)
+                            # ALERTS
                             # -------------------------------
                             if total >= ALERT_WHALE_BTC:
                                 exchange, flow_type, flow_btc = classify_flow(inputs, outputs, c)
