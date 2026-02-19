@@ -21,12 +21,12 @@ CORS(app)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MINIAPP_DIR = os.path.join(BASE_DIR, "miniapp")
 
-WINDOWS = [600, 3600]  # 10 min, 60 min
+WINDOWS = [600, 3600]
 
 
-# =========================
+# =====================================================
 # BTC PRICE
-# =========================
+# =====================================================
 
 def fetch_btc_price():
     try:
@@ -53,14 +53,14 @@ def price_sampler():
                 db.commit()
                 db.close()
         except Exception as e:
-            logger.exception(f"Error in price_sampler: {e}")
+            logger.exception(e)
 
         time.sleep(30)
 
 
-# =========================
-# EXCHANGE FLOW SAMPLER
-# =========================
+# =====================================================
+# EXCHANGE FLOW SAMPLER (FIXED)
+# =====================================================
 
 def exchange_flow_sampler():
     while True:
@@ -69,21 +69,31 @@ def exchange_flow_sampler():
             since = now - 600
 
             db = get_db()
+            c = db.cursor()
 
-            buy = db.execute("""
-                SELECT SUM(btc) FROM whale_classification
+            rows = c.execute("""
+                SELECT to_cluster as cluster_id, 'DEPOSIT' as flow_type, SUM(btc) as total
+                FROM whale_classification
                 WHERE time > ? AND flow_type='DEPOSIT'
-            """, (since,)).fetchone()[0] or 0
+                GROUP BY to_cluster
 
-            sell = db.execute("""
-                SELECT SUM(btc) FROM whale_classification
+                UNION ALL
+
+                SELECT from_cluster as cluster_id, 'WITHDRAW' as flow_type, SUM(btc) as total
+                FROM whale_classification
                 WHERE time > ? AND flow_type='WITHDRAW'
-            """, (since,)).fetchone()[0] or 0
+                GROUP BY from_cluster
+            """, (since, since)).fetchall()
 
-            db.execute("""
-                INSERT OR REPLACE INTO exchange_flow(ts, buy_btc, sell_btc)
-                VALUES (?,?,?)
-            """, (now, buy, sell))
+            for r in rows:
+                if not r["cluster_id"]:
+                    continue
+
+                c.execute("""
+                    INSERT OR REPLACE INTO exchange_flow
+                    (ts, cluster_id, flow_type, btc)
+                    VALUES (?,?,?,?)
+                """, (now, r["cluster_id"], r["flow_type"], r["total"] or 0))
 
             db.commit()
             db.close()
@@ -94,24 +104,25 @@ def exchange_flow_sampler():
         time.sleep(60)
 
 
-# =========================
-# TRAINER
-# =========================
+# =====================================================
+# TRAINER (FIXED)
+# =====================================================
 
 def trainer():
     while True:
         try:
             db = get_db()
+            c = db.cursor()
 
             for w in WINDOWS:
                 now = int(time.time())
 
-                p1 = db.execute(
+                p1 = c.execute(
                     "SELECT price FROM btc_price WHERE ts < ? ORDER BY ts DESC LIMIT 1",
                     (now,)
                 ).fetchone()
 
-                p0 = db.execute(
+                p0 = c.execute(
                     "SELECT price FROM btc_price WHERE ts < ? ORDER BY ts DESC LIMIT 1",
                     (now - w,)
                 ).fetchone()
@@ -121,17 +132,19 @@ def trainer():
 
                 dp = (p1["price"] - p0["price"]) / p0["price"]
 
-                row = db.execute("""
-                    SELECT SUM(buy_btc) as b, SUM(sell_btc) as s
+                row = c.execute("""
+                    SELECT
+                        SUM(CASE WHEN flow_type='DEPOSIT' THEN btc ELSE 0 END) as buy,
+                        SUM(CASE WHEN flow_type='WITHDRAW' THEN btc ELSE 0 END) as sell
                     FROM exchange_flow
                     WHERE ts > ?
                 """, (now - w,)).fetchone()
 
-                buy = row["b"] or 0
-                sell = row["s"] or 0
+                buy = row["buy"] or 0
+                sell = row["sell"] or 0
                 net_flow = buy - sell
 
-                corr = db.execute(
+                corr = c.execute(
                     "SELECT weight, samples FROM whale_correlation WHERE window=?",
                     (w,)
                 ).fetchone()
@@ -145,14 +158,13 @@ def trainer():
                         / (samples + 1)
                     )
 
-                    db.execute(
+                    c.execute(
                         "UPDATE whale_correlation SET weight=?, samples=? WHERE window=?",
                         (new_weight, samples + 1, w)
                     )
                 else:
                     new_weight = dp / (abs(net_flow) + 1)
-
-                    db.execute(
+                    c.execute(
                         "INSERT INTO whale_correlation VALUES (?,?,1)",
                         (w, new_weight)
                     )
@@ -161,14 +173,14 @@ def trainer():
             db.close()
 
         except Exception as e:
-            logger.exception(f"Error in trainer: {e}")
+            logger.exception(e)
 
         time.sleep(300)
 
 
-# =========================
+# =====================================================
 # API
-# =========================
+# =====================================================
 
 @app.route("/whales")
 def whales():
@@ -180,7 +192,7 @@ def whales():
                 txid,
                 btc,
                 time,
-                flow_type as flow,
+                flow_type,
                 from_cluster,
                 to_cluster
             FROM whale_classification
@@ -197,61 +209,52 @@ def whales():
         })
 
     except Exception as e:
-        logger.exception(f"Error in /whales endpoint: {e}")
+        logger.exception(e)
         return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/price")
 def price():
-    try:
-        db = get_db()
-        r = db.execute(
-            "SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1"
-        ).fetchone()
-        db.close()
-        return jsonify({"price": r["price"] if r else None})
-    except Exception as e:
-        logger.exception(f"Error in /price endpoint: {e}")
-        return jsonify({"error": "Internal server error"}), 500
+    db = get_db()
+    r = db.execute(
+        "SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1"
+    ).fetchone()
+    db.close()
+    return jsonify({"price": r["price"] if r else None})
 
 
 @app.route("/prediction")
 def prediction():
-    try:
-        db = get_db()
+    db = get_db()
 
-        price_row = db.execute(
-            "SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1"
+    price_row = db.execute(
+        "SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1"
+    ).fetchone()
+
+    if not price_row:
+        return jsonify({})
+
+    price = price_row["price"]
+    out = {}
+
+    for w in WINDOWS:
+        r = db.execute(
+            "SELECT weight FROM whale_correlation WHERE window=?",
+            (w,)
         ).fetchone()
 
-        if not price_row:
-            return jsonify({})
+        if not r:
+            continue
 
-        price = price_row["price"]
-        out = {}
+        pct = r["weight"] * 100
 
-        for w in WINDOWS:
-            r = db.execute(
-                "SELECT weight FROM whale_correlation WHERE window=?",
-                (w,)
-            ).fetchone()
+        out[str(w)] = {
+            "pct": round(pct, 2),
+            "target": round(price * (1 + pct / 100), 2)
+        }
 
-            if not r:
-                continue
-
-            pct = r["weight"] * 100
-
-            out[str(w)] = {
-                "pct": round(pct, 2),
-                "target": round(price * (1 + pct / 100), 2)
-            }
-
-        db.close()
-        return jsonify(out)
-
-    except Exception as e:
-        logger.exception(f"Error in /prediction endpoint: {e}")
-        return jsonify({"error": "Internal server error"}), 500
+    db.close()
+    return jsonify(out)
 
 
 @app.route("/events")
@@ -276,9 +279,9 @@ def files(path):
     return send_from_directory(MINIAPP_DIR, path)
 
 
-# =========================
+# =====================================================
 # STARTUP
-# =========================
+# =====================================================
 
 def start_ws():
     loop = asyncio.new_event_loop()
@@ -291,17 +294,16 @@ def clustering_loop():
         try:
             run_cluster_expansion()
         except Exception as e:
-            logger.exception(f"[CLUSTER] loop error: {e}")
+            logger.exception(e)
 
         time.sleep(1800)
 
 
 if __name__ == "__main__":
     db_path = Config.DB_PATH
-    db_path.parent.mkdir(exist_ok=True, parents=True)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not db_path.exists():
-        logger.info(f"Database not found at {db_path}, initializing new one")
         init_db()
 
     threading.Thread(target=clustering_loop, daemon=True).start()
@@ -309,8 +311,6 @@ if __name__ == "__main__":
     threading.Thread(target=price_sampler, daemon=True).start()
     threading.Thread(target=exchange_flow_sampler, daemon=True).start()
     threading.Thread(target=trainer, daemon=True).start()
-
-    logger.info("Starting Flask server on 0.0.0.0:8000")
 
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port, debug=Config.DEBUG)
