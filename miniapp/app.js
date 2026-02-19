@@ -1,7 +1,7 @@
 let lastPrice = null;
-
-// Хранение алертов, чтобы не дублировать
 const alertsDisplayed = new Set();
+
+const ALERT_WHALE_BTC = window.ALERT_WHALE_BTC || 3000;
 
 function fmtTime(ts) {
     const d = new Date(ts * 1000);
@@ -10,15 +10,12 @@ function fmtTime(ts) {
 
 async function load() {
     try {
-        // whales
         const wr = await fetch("/whales?t=" + Date.now());
         const wj = await wr.json();
 
-        // predictions
         const pr = await fetch("/prediction?t=" + Date.now());
         const pj = await pr.json();
 
-        // price
         const prc = await fetch("/price?t=" + Date.now());
         const pcj = await prc.json();
 
@@ -28,7 +25,6 @@ async function load() {
             for (const x of wj.whales) {
                 const t = fmtTime(x.time);
                 const isHuge = x.btc >= 1000;
-
                 const cls = isHuge ? "whale huge" : "whale";
 
                 let dir = "";
@@ -62,9 +58,6 @@ async function load() {
     }
 }
 
-// ==========================
-// SSE для алертов по ALERT_WHALE_BTC
-// ==========================
 
 function startAlerts() {
     const evtSource = new EventSource("/events");
@@ -72,32 +65,28 @@ function startAlerts() {
     evtSource.onmessage = (e) => {
         try {
             const tx = JSON.parse(e.data);
-            // фильтруем по ALERT_WHALE_BTC
-            if (tx.btc >= parseFloat(ALERT_WHALE_BTC || "3000")) {
-                const key = tx.txid;
-                if (alertsDisplayed.has(key)) return; // уже показано
-                alertsDisplayed.add(key);
 
-                const t = fmtTime(tx.time);
-                let msg = `${t} &nbsp; ${tx.btc.toFixed(2)} BTC`;
+            if (tx.btc >= ALERT_WHALE_BTC) {
 
-                if (tx.exchange) {
-                    let dir = "";
-                    if (tx.flow === "DEPOSIT") dir = "→ Exchange";
-                    if (tx.flow === "WITHDRAWAL") dir = "← Exchange";
-                    if (tx.flow === "INTERNAL") dir = "↔";
+                if (alertsDisplayed.has(tx.txid)) return;
+                alertsDisplayed.add(tx.txid);
 
-                    msg += ` ${dir} ${tx.exchange}`;
-                }
+                const t = fmtTime(tx.time || Math.floor(Date.now()/1000));
+
+                let dir = "";
+                if (tx.flow === "DEPOSIT") dir = "→ Exchange";
+                if (tx.flow === "WITHDRAWAL") dir = "← Exchange";
+                if (tx.flow === "INTERNAL") dir = "↔";
+
+                const msg = `${t} &nbsp; ${tx.btc.toFixed(2)} BTC ${dir} ${tx.exchange || ""}`;
 
                 const alertsDiv = document.getElementById("alerts");
-                if (alertsDiv) {
-                    const div = document.createElement("div");
-                    div.className = "alert";
-                    div.innerHTML = msg;
-                    alertsDiv.prepend(div);
-                }
+                const div = document.createElement("div");
+                div.className = "alert";
+                div.innerHTML = msg;
+                alertsDiv.prepend(div);
             }
+
         } catch (err) {
             console.error("Alert parsing error:", err);
         }
