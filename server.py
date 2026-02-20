@@ -6,6 +6,8 @@ import asyncio
 import json
 import time
 import requests
+import queue
+import sqlite3
 
 from config import Config
 from database.database import get_db, init_db
@@ -23,7 +25,6 @@ MINIAPP_DIR = os.path.join(BASE_DIR, "miniapp")
 
 WINDOWS = [600, 3600]
 
-
 # =====================================================
 # BTC PRICE
 # =====================================================
@@ -34,6 +35,7 @@ def fetch_btc_price():
             "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
             timeout=10
         )
+        r.raise_for_status()
         return float(r.json()["price"])
     except Exception as e:
         logger.warning(f"Failed to fetch BTC price: {e}")
@@ -47,19 +49,19 @@ def price_sampler():
             if price:
                 db = get_db()
                 db.execute(
-                    "INSERT OR IGNORE INTO btc_price(ts, price) VALUES (?,?)",
+                    "INSERT OR REPLACE INTO btc_price(ts, price) VALUES (?,?)",
                     (int(time.time()), price)
                 )
                 db.commit()
                 db.close()
-        except Exception as e:
-            logger.exception(e)
+        except Exception:
+            logger.exception("Price sampler error")
 
         time.sleep(30)
 
 
 # =====================================================
-# EXCHANGE FLOW SAMPLER (FIXED)
+# EXCHANGE FLOW SAMPLER
 # =====================================================
 
 def exchange_flow_sampler():
@@ -98,14 +100,14 @@ def exchange_flow_sampler():
             db.commit()
             db.close()
 
-        except Exception as e:
-            logger.exception(e)
+        except Exception:
+            logger.exception("Exchange flow sampler error")
 
         time.sleep(60)
 
 
 # =====================================================
-# TRAINER (FIXED)
+# TRAINER
 # =====================================================
 
 def trainer():
@@ -118,12 +120,12 @@ def trainer():
                 now = int(time.time())
 
                 p1 = c.execute(
-                    "SELECT price FROM btc_price WHERE ts < ? ORDER BY ts DESC LIMIT 1",
+                    "SELECT price FROM btc_price WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
                     (now,)
                 ).fetchone()
 
                 p0 = c.execute(
-                    "SELECT price FROM btc_price WHERE ts < ? ORDER BY ts DESC LIMIT 1",
+                    "SELECT price FROM btc_price WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
                     (now - w,)
                 ).fetchone()
 
@@ -149,31 +151,28 @@ def trainer():
                     (w,)
                 ).fetchone()
 
+                value = dp / (abs(net_flow) + 1)
+
                 if corr:
                     weight = corr["weight"]
                     samples = corr["samples"]
-
-                    new_weight = (
-                        (weight * samples + (dp / (abs(net_flow) + 1)))
-                        / (samples + 1)
-                    )
+                    new_weight = (weight * samples + value) / (samples + 1)
 
                     c.execute(
                         "UPDATE whale_correlation SET weight=?, samples=? WHERE window=?",
                         (new_weight, samples + 1, w)
                     )
                 else:
-                    new_weight = dp / (abs(net_flow) + 1)
                     c.execute(
-                        "INSERT INTO whale_correlation VALUES (?,?,1)",
-                        (w, new_weight)
+                        "INSERT INTO whale_correlation(window, weight, samples) VALUES (?,?,1)",
+                        (w, value)
                     )
 
             db.commit()
             db.close()
 
-        except Exception as e:
-            logger.exception(e)
+        except Exception:
+            logger.exception("Trainer error")
 
         time.sleep(300)
 
@@ -208,53 +207,62 @@ def whales():
             "whales": [dict(r) for r in rows]
         })
 
-    except Exception as e:
-        logger.exception(e)
+    except Exception:
+        logger.exception("Whales endpoint error")
         return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/price")
 def price():
-    db = get_db()
-    r = db.execute(
-        "SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1"
-    ).fetchone()
-    db.close()
-    return jsonify({"price": r["price"] if r else None})
+    try:
+        db = get_db()
+        r = db.execute(
+            "SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1"
+        ).fetchone()
+        db.close()
+        return jsonify({"price": r["price"] if r else None})
+    except Exception:
+        logger.exception("Price endpoint error")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/prediction")
 def prediction():
-    db = get_db()
+    try:
+        db = get_db()
 
-    price_row = db.execute(
-        "SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1"
-    ).fetchone()
-
-    if not price_row:
-        return jsonify({})
-
-    price = price_row["price"]
-    out = {}
-
-    for w in WINDOWS:
-        r = db.execute(
-            "SELECT weight FROM whale_correlation WHERE window=?",
-            (w,)
+        price_row = db.execute(
+            "SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1"
         ).fetchone()
 
-        if not r:
-            continue
+        if not price_row:
+            return jsonify({})
 
-        pct = r["weight"] * 100
+        price = price_row["price"]
+        out = {}
 
-        out[str(w)] = {
-            "pct": round(pct, 2),
-            "target": round(price * (1 + pct / 100), 2)
-        }
+        for w in WINDOWS:
+            r = db.execute(
+                "SELECT weight FROM whale_correlation WHERE window=?",
+                (w,)
+            ).fetchone()
 
-    db.close()
-    return jsonify(out)
+            if not r:
+                continue
+
+            pct = r["weight"] * 100
+
+            out[str(w)] = {
+                "pct": round(pct, 2),
+                "target": round(price * (1 + pct / 100), 2)
+            }
+
+        db.close()
+        return jsonify(out)
+
+    except Exception:
+        logger.exception("Prediction endpoint error")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/events")
@@ -262,9 +270,12 @@ def events():
     def stream():
         q = get_event_queue()
         while True:
-            tx = q.get()
-            tx["ts"] = int(time.time())
-            yield f"data: {json.dumps(tx)}\n\n"
+            try:
+                tx = q.get(timeout=10)
+                tx["ts"] = int(time.time())
+                yield f"data: {json.dumps(tx)}\n\n"
+            except queue.Empty:
+                yield ":\n\n"  # heartbeat
 
     return Response(stream(), mimetype="text/event-stream")
 
@@ -286,25 +297,36 @@ def files(path):
 def start_ws():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(mempool_ws_handler())
+    try:
+        loop.run_until_complete(mempool_ws_handler())
+    except Exception:
+        logger.exception("WebSocket crashed")
 
 
 def clustering_loop():
     while True:
         try:
             run_cluster_expansion()
-        except Exception as e:
-            logger.exception(e)
+        except Exception:
+            logger.exception("Cluster expansion error")
 
         time.sleep(1800)
 
 
-if __name__ == "__main__":
+def ensure_db():
     db_path = Config.DB_PATH
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not db_path.exists():
         init_db()
+
+    # Проверка соединения
+    conn = sqlite3.connect(db_path)
+    conn.close()
+
+
+if __name__ == "__main__":
+    ensure_db()
 
     threading.Thread(target=clustering_loop, daemon=True).start()
     threading.Thread(target=start_ws, daemon=True).start()
@@ -313,4 +335,4 @@ if __name__ == "__main__":
     threading.Thread(target=trainer, daemon=True).start()
 
     port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port, debug=Config.DEBUG)
+    app.run(host="0.0.0.0", port=port, debug=Config.DEBUG, threaded=True)

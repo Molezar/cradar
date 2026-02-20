@@ -21,36 +21,68 @@ async function load() {
 
         let out = "";
 
-        if (wj.whales) {
+        if (wj.whales && Array.isArray(wj.whales)) {
+
             for (const x of wj.whales) {
+
                 const t = fmtTime(x.time);
-                const isHuge = x.btc >= 1000;
+                const btc = Number(x.btc || 0);
+                const isHuge = btc >= 1000;
                 const cls = isHuge ? "whale huge" : "whale";
 
                 let dir = "";
-                if (x.flow === "DEPOSIT") dir = "→ EXCHANGE";
-                if (x.flow === "WITHDRAWAL") dir = "← EXCHANGE";
-                if (x.flow === "INTERNAL") dir = "↔";
 
-                out += `<div class="${cls}">
-                ${t} &nbsp; ${x.btc.toFixed(2)} BTC ${dir} ${x.exchange || ""}
-                </div>`;
+                if (x.flow_type === "DEPOSIT") dir = "→ Exchange";
+                else if (x.flow_type === "WITHDRAW") dir = "← Exchange";
+                else if (x.flow_type === "INTERNAL") dir = "↔ Internal";
+                else dir = "";
+
+                out += `
+                    <div class="${cls}">
+                        ${t} &nbsp; ${btc.toFixed(2)} BTC ${dir}
+                    </div>
+                `;
             }
         }
+
+        // =========================
+        // Prediction
+        // =========================
 
         let pred = "<br><div class='pred'>=== AI MARKET FORECAST ===</div>";
 
         for (const horizon in pj) {
-            const row = pj[horizon];
-            const dir = row.pct > 0 ? "⬆" : "⬇";
 
-            pred += `<div>${horizon/60} min ${dir} ${row.pct.toFixed(2)}% → $${row.target.toFixed(0)}</div>`;
+            const row = pj[horizon];
+            if (!row) continue;
+
+            const pct = Number(row.pct || 0);
+            const target = Number(row.target || 0);
+
+            const dir = pct > 0 ? "⬆" : pct < 0 ? "⬇" : "→";
+
+            pred += `
+                <div>
+                    ${horizon / 60} min ${dir}
+                    ${pct.toFixed(2)}%
+                    → $${target.toFixed(0)}
+                </div>
+            `;
         }
 
         document.getElementById("list").innerHTML = out + pred;
 
-        document.getElementById("info").innerText =
-            pcj.price ? `BTC $${pcj.price.toFixed(0)}` : "BTC price…";
+        // =========================
+        // Price
+        // =========================
+
+        if (pcj.price) {
+            lastPrice = pcj.price;
+            document.getElementById("info").innerText =
+                `BTC $${Number(pcj.price).toFixed(0)}`;
+        } else {
+            document.getElementById("info").innerText = "BTC price…";
+        }
 
     } catch (e) {
         document.getElementById("info").innerText = "API error";
@@ -59,39 +91,65 @@ async function load() {
 }
 
 
+// =====================================================
+// ALERTS (SSE)
+// =====================================================
+
 function startAlerts() {
+
     const evtSource = new EventSource("/events");
 
     evtSource.onmessage = (e) => {
+
         try {
+
             const tx = JSON.parse(e.data);
 
-            if (tx.btc >= ALERT_WHALE_BTC) {
+            if (!tx || !tx.txid) return;
 
-                if (alertsDisplayed.has(tx.txid)) return;
-                alertsDisplayed.add(tx.txid);
+            const btc = Number(tx.btc || 0);
 
-                const t = fmtTime(tx.time || Math.floor(Date.now()/1000));
+            if (btc < ALERT_WHALE_BTC) return;
 
-                let dir = "";
-                if (tx.flow === "DEPOSIT") dir = "→ Exchange";
-                if (tx.flow === "WITHDRAWAL") dir = "← Exchange";
-                if (tx.flow === "INTERNAL") dir = "↔";
+            if (alertsDisplayed.has(tx.txid)) return;
+            alertsDisplayed.add(tx.txid);
 
-                const msg = `${t} &nbsp; ${tx.btc.toFixed(2)} BTC ${dir} ${tx.exchange || ""}`;
+            const t = fmtTime(tx.time || Math.floor(Date.now() / 1000));
 
-                const alertsDiv = document.getElementById("alerts");
-                const div = document.createElement("div");
-                div.className = "alert";
-                div.innerHTML = msg;
-                alertsDiv.prepend(div);
-            }
+            let dir = "";
+
+            if (tx.flow === "DEPOSIT") dir = "→ Exchange";
+            else if (tx.flow === "WITHDRAW") dir = "← Exchange";
+            else if (tx.flow === "INTERNAL") dir = "↔ Internal";
+
+            const msg = `
+                ${t} &nbsp;
+                ${btc.toFixed(2)} BTC
+                ${dir}
+            `;
+
+            const alertsDiv = document.getElementById("alerts");
+
+            const div = document.createElement("div");
+            div.className = "alert";
+            div.innerHTML = msg;
+
+            alertsDiv.prepend(div);
 
         } catch (err) {
             console.error("Alert parsing error:", err);
         }
     };
+
+    evtSource.onerror = () => {
+        console.warn("SSE connection lost. Reconnecting...");
+    };
 }
+
+
+// =====================================================
+// INIT
+// =====================================================
 
 load();
 setInterval(load, 5000);

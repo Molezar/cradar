@@ -1,6 +1,7 @@
 import sqlite3
 from pathlib import Path
 from config import Config
+import time
 
 DB_PATH = Config.DB_PATH
 
@@ -22,8 +23,8 @@ def init_db():
     c.execute("""
     CREATE TABLE IF NOT EXISTS whale_tx (
         txid TEXT PRIMARY KEY,
-        btc REAL,
-        time INTEGER
+        btc REAL NOT NULL,
+        time INTEGER NOT NULL
     )
     """)
 
@@ -60,6 +61,12 @@ def init_db():
     )
     """)
 
+    # Индексы для скорости
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tx_inputs_txid ON tx_inputs(txid)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tx_outputs_txid ON tx_outputs(txid)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tx_inputs_addr ON tx_inputs(address)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tx_outputs_addr ON tx_outputs(address)")
+
     # =====================================================
     # 4. Unified Clusters (EXCHANGE + BEHAVIORAL)
     # =====================================================
@@ -67,14 +74,17 @@ def init_db():
     CREATE TABLE IF NOT EXISTS clusters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         cluster_type TEXT NOT NULL,        -- EXCHANGE / BEHAVIORAL
-        name TEXT,                         -- Binance / Kraken / NULL
-        subtype TEXT,                      -- HOT / COLD / OTC / HUB / NULL
+        name TEXT,
+        subtype TEXT,
         confidence REAL DEFAULT 0.0,
         size INTEGER DEFAULT 0,
         created_at INTEGER,
         last_updated INTEGER
     )
     """)
+
+    c.execute("CREATE INDEX IF NOT EXISTS idx_clusters_type ON clusters(cluster_type)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_clusters_name ON clusters(name)")
 
     # =====================================================
     # 5. Address ↔ Cluster binding
@@ -90,8 +100,10 @@ def init_db():
     )
     """)
 
+    c.execute("CREATE INDEX IF NOT EXISTS idx_cluster_addr_cluster ON cluster_addresses(cluster_id)")
+
     # =====================================================
-    # 6. Whale classification (final interpretation layer)
+    # 6. Whale classification
     # =====================================================
     c.execute("""
     CREATE TABLE IF NOT EXISTS whale_classification (
@@ -102,7 +114,7 @@ def init_db():
         from_cluster INTEGER,
         to_cluster INTEGER,
 
-        flow_type TEXT DEFAULT 'UNKNOWN',   -- DEPOSIT / WITHDRAW / INTERNAL / UNKNOWN
+        flow_type TEXT DEFAULT 'UNKNOWN',
 
         FOREIGN KEY(from_cluster) REFERENCES clusters(id),
         FOREIGN KEY(to_cluster) REFERENCES clusters(id)
@@ -110,21 +122,41 @@ def init_db():
     """)
 
     # =====================================================
-    # 7. Exchange Flow Aggregation
+    # 7. Persistent ALERT storage (важно!)
+    # =====================================================
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS alert_tx (
+        txid TEXT PRIMARY KEY,
+        btc REAL,
+        time INTEGER,
+        flow_type TEXT,
+        from_cluster INTEGER,
+        to_cluster INTEGER,
+        FOREIGN KEY(from_cluster) REFERENCES clusters(id),
+        FOREIGN KEY(to_cluster) REFERENCES clusters(id)
+    )
+    """)
+
+    c.execute("CREATE INDEX IF NOT EXISTS idx_alert_time ON alert_tx(time DESC)")
+
+    # =====================================================
+    # 8. Exchange Flow Aggregation
     # =====================================================
     c.execute("""
     CREATE TABLE IF NOT EXISTS exchange_flow (
         ts INTEGER,
         cluster_id INTEGER,
-        flow_type TEXT,          -- DEPOSIT / WITHDRAW
+        flow_type TEXT,
         btc REAL,
         PRIMARY KEY (ts, cluster_id, flow_type),
         FOREIGN KEY(cluster_id) REFERENCES clusters(id)
     )
     """)
 
+    c.execute("CREATE INDEX IF NOT EXISTS idx_exchange_flow_cluster ON exchange_flow(cluster_id)")
+
     # =====================================================
-    # 8. Behavioral statistics
+    # 9. Behavioral statistics
     # =====================================================
     c.execute("""
     CREATE TABLE IF NOT EXISTS address_behavior (
@@ -138,7 +170,7 @@ def init_db():
     """)
 
     # =====================================================
-    # 9. Whale correlation learning
+    # 10. Whale correlation learning
     # =====================================================
     c.execute("""
     CREATE TABLE IF NOT EXISTS whale_correlation (
@@ -149,7 +181,7 @@ def init_db():
     """)
 
     # =====================================================
-    # 10. BTC price history
+    # 11. BTC price history
     # =====================================================
     c.execute("""
     CREATE TABLE IF NOT EXISTS btc_price (
@@ -163,42 +195,35 @@ def init_db():
     # =====================================================
 
     anchors = [
-        # BINANCE
         ('bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh', 'Binance'),
         ('bc1q0e0g9s7n6yd9e5n6g6n2p9n7w6g2g7p7y9kz9f', 'Binance'),
-
-        # COINBASE
         ('bc1qz5h7d0y8m4c9p8g6e3x0k9r7l5v6t4s3n2a1q0', 'Coinbase'),
-
-        # KRAKEN
         ('1Kraken4x3kJp9H5e5mZ6T7N8B4QWJf6', 'Kraken'),
-
-        # BITFINEX
         ('1BitfiNexColdWalletX93P7kT3', 'Bitfinex'),
-
-        # BITSTAMP
         ('1BitstampVaultMainCold123', 'Bitstamp'),
     ]
 
-    import time
     now = int(time.time())
 
     for addr, exch in anchors:
-        # 1. create exchange cluster if not exists
+        # 1. Create exchange cluster if not exists
         c.execute("""
         INSERT OR IGNORE INTO clusters
         (cluster_type, name, subtype, confidence, size, created_at, last_updated)
         VALUES ('EXCHANGE', ?, 'COLD', 1.0, 1, ?, ?)
         """, (exch, now, now))
 
-        # 2. get cluster id
+        # 2. Get cluster id safely
         c.execute("""
         SELECT id FROM clusters
         WHERE cluster_type='EXCHANGE' AND name=?
         """, (exch,))
-        cluster_id = c.fetchone()["id"]
+        row = c.fetchone()
+        if not row:
+            continue
+        cluster_id = row["id"]
 
-        # 3. bind anchor address
+        # 3. Bind anchor address
         c.execute("""
         INSERT OR IGNORE INTO cluster_addresses
         (address, cluster_id, confidence, first_seen, last_seen)

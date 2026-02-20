@@ -2,8 +2,6 @@ import os
 import asyncio
 import aiohttp
 import json
-import sqlite3
-import time
 import ssl
 import certifi
 
@@ -16,15 +14,14 @@ from config import Config
 from logger import get_logger
 from admin import setup_admin
 
-print("ENV:", Config.ENV)
-print("API_URL:", Config.API_URL)
-print("WEBAPP_URL:", Config.WEBAPP_URL)
-print("PORT:", os.environ.get("PORT"))
-
 logger = get_logger(__name__)
 
 BOT_TOKEN = Config.BOT_TOKEN
 WEBAPP_URL = Config.WEBAPP_URL
+
+# =====================================================
+# API URL
+# =====================================================
 
 if Config.IS_PROD:
     API = os.getenv("API_URL")
@@ -38,6 +35,10 @@ else:
 MIN_WHALE_BTC = Config.MIN_WHALE_BTC
 ALERT_WHALE_BTC = Config.ALERT_WHALE_BTC
 
+# =====================================================
+# Bot init
+# =====================================================
+
 bot = Bot(
     BOT_TOKEN,
     default=DefaultBotProperties(parse_mode="HTML")
@@ -46,7 +47,12 @@ dp = Dispatcher()
 setup_admin(dp)
 
 subscribers = set()
+seen_txids = set()  # защита от дублей
 
+
+# =====================================================
+# Start command
+# =====================================================
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
@@ -66,6 +72,10 @@ async def start(message: types.Message):
     )
 
 
+# =====================================================
+# SSE Listener
+# =====================================================
+
 async def whale_listener():
     await asyncio.sleep(2)
     logger.info("Starting whale_listener SSE task")
@@ -76,7 +86,9 @@ async def whale_listener():
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(API + "/events", timeout=None, ssl=ssl_context) as resp:
+
                     async for chunk in resp.content.iter_any():
+
                         text = chunk.decode("utf-8", errors="ignore")
                         buffer += text
 
@@ -96,41 +108,53 @@ async def whale_listener():
                                 except:
                                     continue
 
-                                btc = float(tx.get("btc", 0))
                                 txid = tx.get("txid")
-                                flow = tx.get("flow")
-                                exchange = tx.get("exchange") or "Unknown"
+                                btc = float(tx.get("btc", 0))
+                                flow = tx.get("flow") or "UNKNOWN"
+                                from_cluster = tx.get("from_cluster")
+                                to_cluster = tx.get("to_cluster")
 
                                 if not txid or btc <= 0:
                                     continue
 
-                                send_alert = btc >= ALERT_WHALE_BTC
+                                # защита от повторной отправки
+                                if txid in seen_txids:
+                                    continue
+                                seen_txids.add(txid)
+
+                                # -------------------------------------------------
+                                # Direction + Title
+                                # -------------------------------------------------
+
+                                if flow == "DEPOSIT":
+                                    emoji = "🔴"
+                                    title = "SELL pressure"
+                                    direction = "→ Exchange"
+                                elif flow == "WITHDRAW":
+                                    emoji = "🟢"
+                                    title = "ACCUMULATION"
+                                    direction = "← Exchange"
+                                elif flow == "INTERNAL":
+                                    emoji = "🟡"
+                                    title = "Internal move"
+                                    direction = "↔ Internal"
+                                else:
+                                    emoji = "⚪"
+                                    title = "Unknown flow"
+                                    direction = ""
+
+                                size = "HUGE" if btc >= 1000 else "Whale"
+
+                                # -------------------------------------------------
+                                # Main whale message
+                                # -------------------------------------------------
 
                                 if btc >= MIN_WHALE_BTC:
-
-                                    if flow == "DEPOSIT":
-                                        emoji = "🔴"
-                                        title = "SELL pressure"
-                                        direction = "→ Exchange"
-                                    elif flow == "WITHDRAWAL":
-                                        emoji = "🟢"
-                                        title = "ACCUMULATION"
-                                        direction = "← Exchange"
-                                    elif flow == "INTERNAL":
-                                        emoji = "🟡"
-                                        title = "Internal move"
-                                        direction = "↔"
-                                    else:
-                                        emoji = "⚪"
-                                        title = "OTC"
-                                        direction = ""
-
-                                    size = "HUGE" if btc >= 1000 else "Whale"
 
                                     msg = (
                                         f"{emoji} <b>{title}</b>\n"
                                         f"{size}: <b>{btc:.2f} BTC</b>\n"
-                                        f"{direction} <b>{exchange}</b>\n"
+                                        f"{direction}\n"
                                         f"<code>{txid[:16]}…</code>"
                                     )
 
@@ -140,11 +164,15 @@ async def whale_listener():
                                         except:
                                             subscribers.discard(cid)
 
-                                if send_alert:
+                                # -------------------------------------------------
+                                # Extra ALERT message (only for very large)
+                                # -------------------------------------------------
+
+                                if btc >= ALERT_WHALE_BTC:
+
                                     alert_msg = (
                                         f"⚡ <b>ALERT</b>\n"
-                                        f"{flow or 'Unknown'}: <b>{btc:.2f} BTC</b>\n"
-                                        f"<b>{exchange}</b>\n"
+                                        f"{flow}: <b>{btc:.2f} BTC</b>\n"
                                         f"<code>{txid[:16]}…</code>"
                                     )
 
@@ -158,6 +186,10 @@ async def whale_listener():
             logger.error(f"SSE error: {e}")
             await asyncio.sleep(3)
 
+
+# =====================================================
+# Main
+# =====================================================
 
 async def main():
     asyncio.create_task(whale_listener())
