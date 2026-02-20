@@ -2,31 +2,54 @@ body {
     background: #111;
     color: #0f0;
     font-family: monospace;
+    margin: 0;
+    padding: 0;
+}
+
+.container {
     padding: 20px;
+    max-width: 700px;
 }
 
 h1 {
     color: #ff9900;
+    margin-bottom: 10px;
+}
+
+.price {
+    font-size: 20px;
+    margin-bottom: 10px;
+}
+
+.tx-list {
+    margin-top: 20px;
 }
 
 .whale {
-    color: #0f0;
+    padding: 4px 0;
+    border-bottom: 1px solid #222;
 }
 
 .whale.huge {
-    color: #ff0000;
+    color: #ff4444;
     font-weight: bold;
 }
 
-.pred {
+.pred-title {
     color: #ff9900;
     margin-top: 10px;
+    margin-bottom: 5px;
+    font-weight: bold;
+}
+
+.pred-row {
+    padding: 2px 0;
 }
 
 .alert {
     background: #330000;
     color: #ff4444;
-    padding: 5px;
-    margin-bottom: 4px;
+    padding: 6px;
+    margin-bottom: 6px;
     border-left: 3px solid red;
 }
