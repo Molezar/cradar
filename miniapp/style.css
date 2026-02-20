@@ -2,54 +2,67 @@ body {
     background: #111;
     color: #0f0;
     font-family: monospace;
+    padding: 16px;
     margin: 0;
-    padding: 0;
 }
 
-.container {
-    padding: 20px;
-    max-width: 700px;
-}
-
+/* Заголовок */
 h1 {
     color: #ff9900;
-    margin-bottom: 10px;
+    margin: 0 0 10px 0;
 }
 
-.price {
+/* Цена */
+#info {
     font-size: 20px;
     margin-bottom: 10px;
 }
 
-.tx-list {
-    margin-top: 20px;
+/* Блок прогноза */
+#forecast {
+    margin: 10px 0 15px 0;
 }
 
-.whale {
+.pred {
+    color: #ff9900;
+    font-weight: bold;
+    margin-bottom: 6px;
+}
+
+#forecast div {
+    padding: 2px 0;
+}
+
+/* Список транзакций */
+#list {
+    margin-top: 10px;
+}
+
+#list div {
     padding: 4px 0;
-    border-bottom: 1px solid #222;
 }
 
+/* Обычная транзакция */
+.whale {
+    color: #0f0;
+}
+
+/* Крупная транзакция */
 .whale.huge {
     color: #ff4444;
     font-weight: bold;
 }
 
-.pred-title {
-    color: #ff9900;
-    margin-top: 10px;
-    margin-bottom: 5px;
-    font-weight: bold;
-}
-
-.pred-row {
-    padding: 2px 0;
+/* Алерты */
+#alerts {
+    margin: 10px 0;
 }
 
 .alert {
     background: #330000;
     color: #ff4444;
-    padding: 6px;
+    padding: 6px 8px;
     margin-bottom: 6px;
     border-left: 3px solid red;
+    font-weight: bold;
 }
