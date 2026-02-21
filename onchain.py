@@ -134,6 +134,8 @@ def classify_flow(inputs, outputs, cursor):
 # =====================================================
 
 async def mempool_ws_handler():
+    backoff = 5
+
     while True:
         try:
             logger.info("[MEMPOOL] Connecting…")
@@ -141,9 +143,12 @@ async def mempool_ws_handler():
             async with websockets.connect(
                 MEMPOOL_WS,
                 ping_interval=20,
-                ping_timeout=10,
+                ping_timeout=20,
+                close_timeout=10,
                 max_size=None
             ) as ws:
+
+                backoff = 5  # reset after success
 
                 await ws.send(json.dumps({"track-mempool": True}))
                 logger.info("[MEMPOOL] Subscribed")
@@ -164,7 +169,6 @@ async def mempool_ws_handler():
                     now = int(time.time())
 
                     for tx in txs:
-
                         try:
                             txid = tx.get("txid")
                             if not txid:
@@ -174,15 +178,10 @@ async def mempool_ws_handler():
                             outputs = get_output_map(tx)
                             total = sum(outputs.values())
 
-                            # =================================================
-                            # LEARNING PART
-                            # =================================================
-
                             if total >= MIN_WHALE_BTC:
 
-                                # создаём кластеры только если tx крупная
                                 for addr in list(inputs.keys()) + list(outputs.keys()):
-                                    cid, conf = resolve_cluster(addr, c)
+                                    cid, _ = resolve_cluster(addr, c)
                                     if not cid:
                                         create_behavioral_cluster(addr, c)
                                     else:
@@ -195,13 +194,11 @@ async def mempool_ws_handler():
                                 if flow_btc <= 0:
                                     flow_btc = total
 
-                                # whale_tx
                                 c.execute("""
                                     INSERT OR IGNORE INTO whale_tx(txid, btc, time)
                                     VALUES (?,?,?)
                                 """, (txid, total, now))
 
-                                # whale_classification
                                 c.execute("""
                                     INSERT OR REPLACE INTO whale_classification
                                     (txid, btc, time, from_cluster, to_cluster, flow_type)
@@ -209,10 +206,6 @@ async def mempool_ws_handler():
                                 """, (txid, flow_btc, now, from_c, to_c, flow_type))
 
                                 db.commit()
-
-                            # =================================================
-                            # ALERT PART
-                            # =================================================
 
                             if total >= ALERT_WHALE_BTC:
 
@@ -234,15 +227,12 @@ async def mempool_ws_handler():
 
                                 _events.put(event)
 
-                                logger.info(
-                                    f"🚨 ALERT {flow_type} {flow_btc:.2f} BTC"
-                                )
-
-                        except Exception as e:
-                            logger.exception(f"TX error {tx.get('txid')}: {e}")
+                        except Exception:
+                            logger.exception("TX processing error")
 
                     db.close()
 
         except Exception as e:
             logger.exception(f"[MEMPOOL] WS error: {e}")
-            await asyncio.sleep(5)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)

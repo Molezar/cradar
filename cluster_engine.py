@@ -5,6 +5,17 @@ from collections import defaultdict
 from database.database import get_db
 from logger import get_logger
 
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+session = requests.Session()
+retries = Retry(
+    total=5,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+)
+session.mount("https://", HTTPAdapter(max_retries=retries))
+
 logger = get_logger(__name__)
 
 MEMPOOL_ADDR = "https://mempool.space/api/address/"
@@ -18,7 +29,7 @@ SWEEP_THRESHOLD = 3
 
 def fetch_txs(address):
     try:
-        r = requests.get(MEMPOOL_ADDR + address + "/txs", timeout=20)
+        r = session.get(MEMPOOL_ADDR + address + "/txs", timeout=30)
         if r.status_code != 200:
             return []
         return r.json()
