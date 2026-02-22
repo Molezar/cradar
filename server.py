@@ -11,7 +11,7 @@ import sqlite3
 
 from config import Config
 from database.database import get_db, init_db
-from onchain import mempool_ws_handler, get_event_queue
+from onchain import mempool_rest_worker, get_event_queue
 from cluster_engine import run_cluster_expansion
 from logger import get_logger
 
@@ -275,7 +275,7 @@ def events():
                 tx["ts"] = int(time.time())
                 yield f"data: {json.dumps(tx)}\n\n"
             except queue.Empty:
-                yield ":\n\n"  # heartbeat
+                yield ":\n\n"
 
     return Response(stream(), mimetype="text/event-stream")
 
@@ -294,13 +294,13 @@ def files(path):
 # STARTUP
 # =====================================================
 
-def start_ws():
+def start_mempool_worker():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(mempool_ws_handler())
+        loop.run_until_complete(mempool_rest_worker())
     except Exception:
-        logger.exception("WebSocket crashed")
+        logger.exception("Mempool worker crashed")
 
 
 def clustering_loop():
@@ -320,7 +320,6 @@ def ensure_db():
     if not db_path.exists():
         init_db()
 
-    # Проверка соединения
     conn = sqlite3.connect(db_path)
     conn.close()
 
@@ -329,7 +328,7 @@ if __name__ == "__main__":
     ensure_db()
 
     threading.Thread(target=clustering_loop, daemon=True).start()
-    threading.Thread(target=start_ws, daemon=True).start()
+    threading.Thread(target=start_mempool_worker, daemon=True).start()
     threading.Thread(target=price_sampler, daemon=True).start()
     threading.Thread(target=exchange_flow_sampler, daemon=True).start()
     threading.Thread(target=trainer, daemon=True).start()
