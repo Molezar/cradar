@@ -8,6 +8,14 @@ from logger import get_logger
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+logger = get_logger(__name__)
+
+MEMPOOL_ADDR = "https://mempool.space/api/address/"
+CLUSTER_WINDOW = 30 * 24 * 3600
+SWEEP_THRESHOLD = 3
+
+# -------- safe session ----------
+
 session = requests.Session()
 retries = Retry(
     total=5,
@@ -16,23 +24,20 @@ retries = Retry(
 )
 session.mount("https://", HTTPAdapter(max_retries=retries))
 
-logger = get_logger(__name__)
-
-MEMPOOL_ADDR = "https://mempool.space/api/address/"
-CLUSTER_WINDOW = 30 * 24 * 3600  # 30 дней
-SWEEP_THRESHOLD = 3
-
-
-# =====================================================
-# Utils
-# =====================================================
 
 def fetch_txs(address):
     try:
-        r = session.get(MEMPOOL_ADDR + address + "/txs", timeout=30)
+        r = session.get(MEMPOOL_ADDR + address + "/txs", timeout=20)
+
+        if r.status_code == 429:
+            logger.warning("[CLUSTER] 429 rate limit")
+            return []
+
         if r.status_code != 200:
             return []
+
         return r.json()
+
     except Exception as e:
         logger.warning(f"[CLUSTER] fetch_txs error: {e}")
         return []
@@ -46,13 +51,9 @@ def get_exchange_clusters(cursor):
     """).fetchall()
 
 
-# =====================================================
-# Core expansion logic
-# =====================================================
-
 def expand_exchange_cluster(cursor, cluster_id, cold_address, name):
 
-    logger.info(f"[CLUSTER] Expanding {name} via {cold_address[:10]}")
+    logger.info(f"[CLUSTER] Expanding {name}")
 
     txs = fetch_txs(cold_address)
     now = int(time.time())
@@ -63,22 +64,15 @@ def expand_exchange_cluster(cursor, cluster_id, cold_address, name):
 
         block_time = tx.get("status", {}).get("block_time", now)
 
-        # ограничиваем по времени
         if abs(now - block_time) > CLUSTER_WINDOW:
             continue
 
-        # ---------
-        # INPUT side (sweep в cold)
-        # ---------
         for vin in tx.get("vin", []):
             prev = vin.get("prevout", {})
             addr = prev.get("scriptpubkey_address")
             if addr and addr != cold_address:
                 candidates[addr] += 1
 
-        # ---------
-        # OUTPUT side (hot выводят в cold)
-        # ---------
         for vout in tx.get("vout", []):
             addr = vout.get("scriptpubkey_address")
             if addr and addr != cold_address:
@@ -101,7 +95,6 @@ def expand_exchange_cluster(cursor, cluster_id, cold_address, name):
 
         if existing:
 
-            # если уже в этом кластере — усиливаем confidence
             if existing["cluster_id"] == cluster_id:
 
                 cursor.execute("""
@@ -111,11 +104,7 @@ def expand_exchange_cluster(cursor, cluster_id, cold_address, name):
                     WHERE address=?
                 """, (now, addr))
 
-            # если принадлежит другому кластеру — не трогаем
-
         else:
-            logger.info(f"[CLUSTER] Learned {addr[:10]} as {name} score={score:.2f}")
-
             cursor.execute("""
                 INSERT INTO cluster_addresses
                 (address, cluster_id, confidence, first_seen, last_seen)
@@ -124,7 +113,6 @@ def expand_exchange_cluster(cursor, cluster_id, cold_address, name):
 
             learned += 1
 
-    # обновляем метаданные кластера
     if learned > 0:
         cursor.execute("""
             UPDATE clusters
@@ -135,10 +123,6 @@ def expand_exchange_cluster(cursor, cluster_id, cold_address, name):
             WHERE id=?
         """, (cluster_id, now, cluster_id))
 
-
-# =====================================================
-# Entry
-# =====================================================
 
 def run_cluster_expansion():
 
@@ -152,7 +136,6 @@ def run_cluster_expansion():
         cluster_id = row["id"]
         name = row["name"]
 
-        # якорные адреса = почти 100% cold
         anchors = c.execute("""
             SELECT address
             FROM cluster_addresses
@@ -173,10 +156,6 @@ def run_cluster_expansion():
     db.commit()
     db.close()
 
-
-# =====================================================
-# Standalone mode
-# =====================================================
 
 if __name__ == "__main__":
     while True:

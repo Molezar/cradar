@@ -1,21 +1,36 @@
 import time
 import json
 import asyncio
-import websockets
 import queue
+import requests
 
 from database.database import get_db
 from config import Config
 from logger import get_logger
 
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 logger = get_logger(__name__)
 
 MIN_WHALE_BTC = Config.MIN_WHALE_BTC
 ALERT_WHALE_BTC = Config.ALERT_WHALE_BTC
-MEMPOOL_WS = "wss://mempool.space/api/v1/ws"
 SATOSHI = 100_000_000
 
+MEMPOOL_RECENT = "https://mempool.space/api/mempool/recent"
+
 _events = queue.Queue()
+_seen_txids = set()
+
+# ---------- Safe REST session ----------
+
+session = requests.Session()
+retries = Retry(
+    total=5,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+)
+session.mount("https://", HTTPAdapter(max_retries=retries))
 
 
 def get_event_queue():
@@ -102,26 +117,23 @@ def classify_flow(inputs, outputs, cursor):
     out_clusters = {}
 
     for addr, btc in inputs.items():
-        cid, conf = resolve_cluster(addr, cursor)
+        cid, _ = resolve_cluster(addr, cursor)
         if cid:
             in_clusters[cid] = in_clusters.get(cid, 0) + btc
 
     for addr, btc in outputs.items():
-        cid, conf = resolve_cluster(addr, cursor)
+        cid, _ = resolve_cluster(addr, cursor)
         if cid:
             out_clusters[cid] = out_clusters.get(cid, 0) + btc
 
-    # INTERNAL
     for cid in in_clusters:
         if cid in out_clusters:
             return cid, cid, "INTERNAL", min(in_clusters[cid], out_clusters[cid])
 
-    # DEPOSIT (входит в кластер)
     for cid in out_clusters:
         if cid not in in_clusters:
             return None, cid, "DEPOSIT", out_clusters[cid]
 
-    # WITHDRAW (выходит из кластера)
     for cid in in_clusters:
         if cid not in out_clusters:
             return cid, None, "WITHDRAW", in_clusters[cid]
@@ -130,122 +142,105 @@ def classify_flow(inputs, outputs, cursor):
 
 
 # =====================================================
-# WebSocket
+# REST Polling Engine
 # =====================================================
 
-async def mempool_ws_handler():
-    backoff = 5
+def fetch_recent_mempool():
+    try:
+        r = session.get(MEMPOOL_RECENT, timeout=20)
+
+        if r.status_code == 429:
+            logger.warning("[MEMPOOL] 429 rate limit hit")
+            return []
+
+        if r.status_code != 200:
+            return []
+
+        return r.json()
+
+    except Exception as e:
+        logger.warning(f"[MEMPOOL] REST error: {e}")
+        return []
+
+
+async def mempool_rest_worker():
+
+    interval = 20  # 20 seconds polling (safe)
+    backoff = 20
 
     while True:
+
         try:
-            logger.info("[MEMPOOL] Connecting…")
 
-            async with websockets.connect(
-                MEMPOOL_WS,
-                ping_interval=20,
-                ping_timeout=20,
-                close_timeout=10,
-                open_timeout=20,          # ✅ фикс handshake timeout
-                max_size=10_000_000
-            ) as ws:
+            txs = fetch_recent_mempool()
 
-                logger.info("[MEMPOOL] Connected")
-                backoff = 5
+            if not txs:
+                await asyncio.sleep(interval)
+                continue
 
-                await ws.send(json.dumps({"track-mempool": True}))
-                logger.info("[MEMPOOL] Subscribed")
+            db = get_db()
+            c = db.cursor()
+            now = int(time.time())
 
-                async for raw in ws:
+            for tx in txs:
 
-                    try:
-                        data = json.loads(raw)
-                    except Exception:
-                        continue
+                txid = tx.get("txid")
+                if not txid or txid in _seen_txids:
+                    continue
 
-                    txs = data.get("mempool-transactions", {}).get("added", [])
-                    if not txs:
-                        continue
+                _seen_txids.add(txid)
 
-                    try:
-                        db = get_db()
-                        c = db.cursor()
-                        now = int(time.time())
+                inputs = get_input_map(tx)
+                outputs = get_output_map(tx)
+                total = sum(outputs.values())
 
-                        for tx in txs:
-                            try:
-                                txid = tx.get("txid")
-                                if not txid:
-                                    continue
+                if total < MIN_WHALE_BTC:
+                    continue
 
-                                inputs = get_input_map(tx)
-                                outputs = get_output_map(tx)
-                                total = sum(outputs.values())
+                for addr in list(inputs.keys()) + list(outputs.keys()):
+                    cid, _ = resolve_cluster(addr, c)
+                    if not cid:
+                        create_behavioral_cluster(addr, c)
+                    else:
+                        update_address_seen(addr, c)
 
-                                if total >= MIN_WHALE_BTC:
+                from_c, to_c, flow_type, flow_btc = classify_flow(
+                    inputs, outputs, c
+                )
 
-                                    for addr in list(inputs.keys()) + list(outputs.keys()):
-                                        cid, _ = resolve_cluster(addr, c)
-                                        if not cid:
-                                            create_behavioral_cluster(addr, c)
-                                        else:
-                                            update_address_seen(addr, c)
+                if flow_btc <= 0:
+                    flow_btc = total
 
-                                    from_c, to_c, flow_type, flow_btc = classify_flow(
-                                        inputs, outputs, c
-                                    )
+                c.execute("""
+                    INSERT OR IGNORE INTO whale_tx(txid, btc, time)
+                    VALUES (?,?,?)
+                """, (txid, total, now))
 
-                                    if flow_btc <= 0:
-                                        flow_btc = total
+                c.execute("""
+                    INSERT OR REPLACE INTO whale_classification
+                    (txid, btc, time, from_cluster, to_cluster, flow_type)
+                    VALUES (?,?,?,?,?,?)
+                """, (txid, flow_btc, now, from_c, to_c, flow_type))
 
-                                    c.execute("""
-                                        INSERT OR IGNORE INTO whale_tx(txid, btc, time)
-                                        VALUES (?,?,?)
-                                    """, (txid, total, now))
+                if total >= ALERT_WHALE_BTC:
+                    event = {
+                        "txid": txid,
+                        "btc": round(flow_btc, 4),
+                        "flow": flow_type,
+                        "from_cluster": from_c,
+                        "to_cluster": to_c,
+                        "time": now
+                    }
+                    _events.put(event)
 
-                                    c.execute("""
-                                        INSERT OR REPLACE INTO whale_classification
-                                        (txid, btc, time, from_cluster, to_cluster, flow_type)
-                                        VALUES (?,?,?,?,?,?)
-                                    """, (txid, flow_btc, now, from_c, to_c, flow_type))
+            db.commit()
+            db.close()
 
-                                if total >= ALERT_WHALE_BTC:
-
-                                    from_c, to_c, flow_type, flow_btc = classify_flow(
-                                        inputs, outputs, c
-                                    )
-
-                                    if flow_btc <= 0:
-                                        flow_btc = total
-
-                                    event = {
-                                        "txid": txid,
-                                        "btc": round(flow_btc, 4),
-                                        "flow": flow_type,
-                                        "from_cluster": from_c,
-                                        "to_cluster": to_c,
-                                        "time": now
-                                    }
-
-                                    _events.put(event)
-
-                            except Exception:
-                                logger.exception("TX processing error")
-
-                        db.commit()
-                        db.close()
-
-                    except Exception:
-                        logger.exception("DB processing error")
-
-        except asyncio.TimeoutError:
-            logger.warning("[MEMPOOL] Connection timeout during handshake")
-
-        except websockets.exceptions.ConnectionClosedError:
-            logger.warning("[MEMPOOL] Connection closed")
+            backoff = interval  # reset if success
 
         except Exception as e:
-            logger.exception(f"[MEMPOOL] WS error: {e}")
+            logger.exception(f"[MEMPOOL] Worker error: {e}")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 120)
 
-        logger.info(f"[MEMPOOL] Reconnecting in {backoff}s...")
-        await asyncio.sleep(backoff)
-        backoff = min(backoff * 2, 60)
+        await asyncio.sleep(interval)
