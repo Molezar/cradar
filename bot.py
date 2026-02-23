@@ -82,90 +82,92 @@ async def whale_listener():
 
     buffer = ""
 
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(API + "/events", timeout=None, ssl=ssl_context) as resp:
+    try:
+        while True:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(API + "/events", timeout=None, ssl=ssl_context) as resp:
 
-                    async for chunk in resp.content.iter_any():
+                        async for chunk in resp.content.iter_any():
 
-                        text = chunk.decode("utf-8", errors="ignore")
-                        buffer += text
+                            text = chunk.decode("utf-8", errors="ignore")
+                            buffer += text
 
-                        while "\n\n" in buffer:
-                            event, buffer = buffer.split("\n\n", 1)
+                            while "\n\n" in buffer:
+                                event, buffer = buffer.split("\n\n", 1)
 
-                            for line in event.splitlines():
-                                if not line.startswith("data:"):
-                                    continue
+                                for line in event.splitlines():
+                                    if not line.startswith("data:"):
+                                        continue
 
-                                raw = line[5:].strip()
-                                if not raw:
-                                    continue
+                                    raw = line[5:].strip()
+                                    if not raw:
+                                        continue
 
-                                try:
-                                    tx = json.loads(raw)
-                                except:
-                                    continue
-
-                                txid = tx.get("txid")
-                                btc = float(tx.get("btc", 0))
-                                flow = tx.get("flow") or "UNKNOWN"
-                                from_cluster = tx.get("from_cluster")
-                                to_cluster = tx.get("to_cluster")
-
-                                if not txid or btc <= 0:
-                                    continue
-
-                                # защита от повторной отправки
-                                if txid in seen_txids:
-                                    continue
-                                seen_txids.add(txid)
-
-                                # -------------------------------------------------
-                                # Direction + Title
-                                # -------------------------------------------------
-
-                                if flow == "DEPOSIT":
-                                    emoji = "🔴"
-                                    title = "SELL pressure"
-                                    direction = "→ Exchange"
-                                elif flow == "WITHDRAW":
-                                    emoji = "🟢"
-                                    title = "ACCUMULATION"
-                                    direction = "← Exchange"
-                                elif flow == "INTERNAL":
-                                    emoji = "🟡"
-                                    title = "Internal move"
-                                    direction = "↔ Internal"
-                                else:
-                                    emoji = "⚪"
-                                    title = "Unknown flow"
-                                    direction = ""
-
-                                size = "HUGE" if btc >= 1000 else "Whale"
-
-                                # -------------------------------------------------
-                                # Extra ALERT message (only for very large)
-                                # -------------------------------------------------
-
-                                msg = (
-                                    f"{emoji} <b>{title}</b>\n"
-                                    f"{size}: <b>{btc:.2f} BTC</b>\n"
-                                    f"{direction}\n"
-                                    f"<code>{txid[:16]}…</code>"
-                                )
-
-                                for cid in list(subscribers):
                                     try:
-                                        await bot.send_message(cid, msg)
+                                        tx = json.loads(raw)
                                     except:
-                                        subscribers.discard(cid)
+                                        continue
 
+                                    txid = tx.get("txid")
+                                    btc = float(tx.get("btc", 0))
+                                    flow = tx.get("flow") or "UNKNOWN"
+                                    from_cluster = tx.get("from_cluster")
+                                    to_cluster = tx.get("to_cluster")
 
-        except Exception as e:
-            logger.error(f"SSE error: {e}")
-            await asyncio.sleep(3)
+                                    if not txid or btc <= 0:
+                                        continue
+
+                                    # защита от повторной отправки
+                                    if txid in seen_txids:
+                                        continue
+                                    seen_txids.add(txid)
+
+                                    # -------------------------------------------------
+                                    # Direction + Title
+                                    # -------------------------------------------------
+
+                                    if flow == "DEPOSIT":
+                                        emoji = "🔴"
+                                        title = "SELL pressure"
+                                        direction = "→ Exchange"
+                                    elif flow == "WITHDRAW":
+                                        emoji = "🟢"
+                                        title = "ACCUMULATION"
+                                        direction = "← Exchange"
+                                    elif flow == "INTERNAL":
+                                        emoji = "🟡"
+                                        title = "Internal move"
+                                        direction = "↔ Internal"
+                                    else:
+                                        emoji = "⚪"
+                                        title = "Unknown flow"
+                                        direction = ""
+
+                                    size = "HUGE" if btc >= 1000 else "Whale"
+
+                                    msg = (
+                                        f"{emoji} <b>{title}</b>\n"
+                                        f"{size}: <b>{btc:.2f} BTC</b>\n"
+                                        f"{direction}\n"
+                                        f"<code>{txid[:16]}…</code>"
+                                    )
+
+                                    for cid in list(subscribers):
+                                        try:
+                                            await bot.send_message(cid, msg)
+                                        except:
+                                            subscribers.discard(cid)
+
+            except asyncio.CancelledError:
+                logger.info("whale_listener cancelled")
+                raise
+            except Exception as e:
+                logger.error(f"SSE error: {e}")
+                await asyncio.sleep(3)
+
+    except asyncio.CancelledError:
+        logger.info("whale_listener stopped gracefully")
 
 
 # =====================================================
@@ -173,8 +175,16 @@ async def whale_listener():
 # =====================================================
 
 async def main():
-    asyncio.create_task(whale_listener())
-    await dp.start_polling(bot)
+    listener_task = asyncio.create_task(whale_listener())
+
+    try:
+        await dp.start_polling(bot)
+    finally:
+        listener_task.cancel()
+        try:
+            await listener_task
+        except asyncio.CancelledError:
+            pass
 
 
 if __name__ == "__main__":
