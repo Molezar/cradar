@@ -103,30 +103,52 @@ def classify_flow(inputs, outputs, cursor):
     in_clusters = {}
     out_clusters = {}
 
+    # собираем входные объёмы
     for addr, btc in inputs.items():
         cid, _ = resolve_cluster(addr, cursor)
         if cid:
             in_clusters[cid] = in_clusters.get(cid, 0) + btc
 
+    # собираем выходные объёмы
     for addr, btc in outputs.items():
         cid, _ = resolve_cluster(addr, cursor)
         if cid:
             out_clusters[cid] = out_clusters.get(cid, 0) + btc
 
-    for cid in in_clusters:
-        if cid in out_clusters:
-            return cid, cid, "INTERNAL", min(in_clusters[cid], out_clusters[cid])
+    all_clusters = set(in_clusters.keys()) | set(out_clusters.keys())
 
-    for cid in out_clusters:
-        if cid not in in_clusters:
-            return None, cid, "DEPOSIT", out_clusters[cid]
+    best_cluster = None
+    best_net = 0
 
-    for cid in in_clusters:
-        if cid not in out_clusters:
-            return cid, None, "WITHDRAW", in_clusters[cid]
+    for cid in all_clusters:
+        in_vol = in_clusters.get(cid, 0)
+        out_vol = out_clusters.get(cid, 0)
 
-    return None, None, "UNKNOWN", 0
+        net = out_vol - in_vol  # положительное = депозит
 
+        if abs(net) > abs(best_net):
+            best_net = net
+            best_cluster = cid
+
+    if not best_cluster:
+        return None, None, "UNKNOWN", 0
+
+    in_vol = in_clusters.get(best_cluster, 0)
+    out_vol = out_clusters.get(best_cluster, 0)
+
+    # INTERNAL если почти равны (5%)
+    if max(in_vol, out_vol) > 0 and abs(in_vol - out_vol) / max(in_vol, out_vol) < 0.05:
+        flow_type = "INTERNAL"
+        flow_btc = min(in_vol, out_vol)
+        return best_cluster, best_cluster, flow_type, flow_btc
+
+    if best_net > 0:
+        # деньги пришли в кластер
+        return None, best_cluster, "DEPOSIT", abs(best_net)
+
+    else:
+        # деньги ушли из кластера
+        return best_cluster, None, "WITHDRAW", abs(best_net)
 
 # =====================================================
 # WebSocket Worker
@@ -189,8 +211,8 @@ async def mempool_ws_worker():
                             inputs, outputs, c
                         )
 
-                        if flow_btc <= 0:
-                            flow_btc = total
+                        if flow_type == "UNKNOWN":
+                            continue
 
                         c.execute("""
                             INSERT OR IGNORE INTO whale_tx(txid, btc, time)
