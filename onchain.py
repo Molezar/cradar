@@ -13,8 +13,8 @@ logger = get_logger(__name__)
 MIN_WHALE_BTC = Config.MIN_WHALE_BTC
 ALERT_WHALE_BTC = Config.ALERT_WHALE_BTC
 SATOSHI = 100_000_000
-
-MEMPOOL_WS = "wss://mempool.space/api/v1/ws"
+MEMPOOL_WS = "wss://mempool.emzy.de/api/v1/ws"
+#MEMPOOL_WS = "wss://mempool.space/api/v1/ws"
 
 _events = queue.Queue()
 _seen_txids = set()
