@@ -11,6 +11,20 @@ from logger import get_logger
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+import socket
+import requests.adapters
+import urllib3.util.connection as urllib3_cn
+
+def force_ipv4():
+    orig_create_connection = urllib3_cn.create_connection
+
+    def patched_create_connection(address, *args, **kwargs):
+        host, port = address
+        return orig_create_connection((host, port), *args, **kwargs)
+
+    urllib3_cn.allowed_gai_family = lambda: socket.AF_INET
+
+force_ipv4()
 logger = get_logger(__name__)
 
 MIN_WHALE_BTC = Config.MIN_WHALE_BTC
