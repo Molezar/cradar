@@ -203,7 +203,7 @@ async def mempool_ws_worker():
                             VALUES (?,?,?,?,?,?)
                         """, (txid, flow_btc, now, from_c, to_c, flow_type))
 
-                        if total >= ALERT_WHALE_BTC:
+                        if flow_btc >= ALERT_WHALE_BTC:
                             event = {
                                 "txid": txid,
                                 "btc": round(flow_btc, 4),

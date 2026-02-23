@@ -117,6 +117,11 @@ async def whale_listener():
                                 if not txid or btc <= 0:
                                     continue
 
+                                # защита от повторной отправки
+                                if txid in seen_txids:
+                                    continue
+                                seen_txids.add(txid)
+
                                 # -------------------------------------------------
                                 # Direction + Title
                                 # -------------------------------------------------
@@ -144,20 +149,18 @@ async def whale_listener():
                                 # Extra ALERT message (only for very large)
                                 # -------------------------------------------------
 
-                                if btc >= ALERT_WHALE_BTC:
+                                msg = (
+                                    f"{emoji} <b>{title}</b>\n"
+                                    f"{size}: <b>{btc:.2f} BTC</b>\n"
+                                    f"{direction}\n"
+                                    f"<code>{txid[:16]}…</code>"
+                                )
 
-                                    msg = (
-                                        f"{emoji} <b>{title}</b>\n"
-                                        f"{size}: <b>{btc:.2f} BTC</b>\n"
-                                        f"{direction}\n"
-                                        f"<code>{txid[:16]}…</code>"
-                                    )
-
-                                    for cid in list(subscribers):
-                                        try:
-                                            await bot.send_message(cid, msg)
-                                        except:
-                                            subscribers.discard(cid)
+                                for cid in list(subscribers):
+                                    try:
+                                        await bot.send_message(cid, msg)
+                                    except:
+                                        subscribers.discard(cid)
 
 
         except Exception as e:
