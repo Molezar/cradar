@@ -117,11 +117,6 @@ async def whale_listener():
                                 if not txid or btc <= 0:
                                     continue
 
-                                # защита от повторной отправки
-                                if txid in seen_txids:
-                                    continue
-                                seen_txids.add(txid)
-
                                 # -------------------------------------------------
                                 # Direction + Title
                                 # -------------------------------------------------
@@ -146,10 +141,10 @@ async def whale_listener():
                                 size = "HUGE" if btc >= 1000 else "Whale"
 
                                 # -------------------------------------------------
-                                # Main whale message
+                                # Extra ALERT message (only for very large)
                                 # -------------------------------------------------
 
-                                if btc >= MIN_WHALE_BTC:
+                                if btc >= ALERT_WHALE_BTC:
 
                                     msg = (
                                         f"{emoji} <b>{title}</b>\n"
@@ -164,23 +159,6 @@ async def whale_listener():
                                         except:
                                             subscribers.discard(cid)
 
-                                # -------------------------------------------------
-                                # Extra ALERT message (only for very large)
-                                # -------------------------------------------------
-
-                                if btc >= ALERT_WHALE_BTC:
-
-                                    alert_msg = (
-                                        f"⚡ <b>ALERT</b>\n"
-                                        f"{flow}: <b>{btc:.2f} BTC</b>\n"
-                                        f"<code>{txid[:16]}…</code>"
-                                    )
-
-                                    for cid in list(subscribers):
-                                        try:
-                                            await bot.send_message(cid, alert_msg)
-                                        except:
-                                            subscribers.discard(cid)
 
         except Exception as e:
             logger.error(f"SSE error: {e}")
