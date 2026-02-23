@@ -11,7 +11,7 @@ import sqlite3
 
 from config import Config
 from database.database import get_db, init_db
-from onchain import mempool_rest_worker, get_event_queue
+from onchain import mempool_ws_worker, get_event_queue
 from cluster_engine import run_cluster_expansion
 from logger import get_logger
 
@@ -298,7 +298,7 @@ def start_mempool_worker():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(mempool_rest_worker())
+        loop.run_until_complete(mempool_ws_worker())
     except Exception:
         logger.exception("Mempool worker crashed")
 
@@ -327,7 +327,7 @@ def ensure_db():
 if __name__ == "__main__":
     ensure_db()
 
-    threading.Thread(target=clustering_loop, daemon=True).start()
+    #threading.Thread(target=clustering_loop, daemon=True).start()
     threading.Thread(target=start_mempool_worker, daemon=True).start()
     threading.Thread(target=price_sampler, daemon=True).start()
     threading.Thread(target=exchange_flow_sampler, daemon=True).start()
