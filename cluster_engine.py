@@ -1,46 +1,12 @@
 import time
-import requests
 from collections import defaultdict
 
 from database.database import get_db
 from logger import get_logger
 
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
 logger = get_logger(__name__)
 
-MEMPOOL_ADDR = "https://mempool.space/api/address/"
-CLUSTER_WINDOW = 30 * 24 * 3600
 SWEEP_THRESHOLD = 3
-
-# -------- safe session ----------
-
-session = requests.Session()
-retries = Retry(
-    total=5,
-    backoff_factor=1,
-    status_forcelist=[429, 500, 502, 503, 504],
-)
-session.mount("https://", HTTPAdapter(max_retries=retries))
-
-
-def fetch_txs(address):
-    try:
-        r = session.get(MEMPOOL_ADDR + address + "/txs", timeout=20)
-
-        if r.status_code == 429:
-            logger.warning("[CLUSTER] 429 rate limit")
-            return []
-
-        if r.status_code != 200:
-            return []
-
-        return r.json()
-
-    except Exception as e:
-        logger.warning(f"[CLUSTER] fetch_txs error: {e}")
-        return []
 
 
 def get_exchange_clusters(cursor):
@@ -51,32 +17,36 @@ def get_exchange_clusters(cursor):
     """).fetchall()
 
 
-def expand_exchange_cluster(cursor, cluster_id, cold_address, name):
+def get_recent_whale_txs(cursor, since_ts):
+    return cursor.execute("""
+        SELECT txid
+        FROM whale_classification
+        WHERE time > ?
+    """, (since_ts,)).fetchall()
 
-    logger.info(f"[CLUSTER] Expanding {name}")
 
-    txs = fetch_txs(cold_address)
+def expand_exchange_cluster_from_db(cursor, cluster_id, name):
+
+    logger.info(f"[CLUSTER] Expanding {name} from DB")
+
     now = int(time.time())
+    since = now - (30 * 24 * 3600)
+
+    txs = get_recent_whale_txs(cursor, since)
 
     candidates = defaultdict(int)
 
-    for tx in txs:
+    for row in txs:
+        txid = row["txid"]
 
-        block_time = tx.get("status", {}).get("block_time", now)
+        rows = cursor.execute("""
+            SELECT address
+            FROM tx_outputs
+            WHERE txid=?
+        """, (txid,)).fetchall()
 
-        if abs(now - block_time) > CLUSTER_WINDOW:
-            continue
-
-        for vin in tx.get("vin", []):
-            prev = vin.get("prevout", {})
-            addr = prev.get("scriptpubkey_address")
-            if addr and addr != cold_address:
-                candidates[addr] += 1
-
-        for vout in tx.get("vout", []):
-            addr = vout.get("scriptpubkey_address")
-            if addr and addr != cold_address:
-                candidates[addr] += 1
+        for r in rows:
+            candidates[r["address"]] += 1
 
     learned = 0
 
@@ -84,8 +54,6 @@ def expand_exchange_cluster(cursor, cluster_id, cold_address, name):
 
         if count < SWEEP_THRESHOLD:
             continue
-
-        score = min(1.0, count / 10)
 
         existing = cursor.execute("""
             SELECT cluster_id, confidence
@@ -96,7 +64,6 @@ def expand_exchange_cluster(cursor, cluster_id, cold_address, name):
         if existing:
 
             if existing["cluster_id"] == cluster_id:
-
                 cursor.execute("""
                     UPDATE cluster_addresses
                     SET confidence = MIN(1.0, confidence + 0.05),
@@ -109,7 +76,7 @@ def expand_exchange_cluster(cursor, cluster_id, cold_address, name):
                 INSERT INTO cluster_addresses
                 (address, cluster_id, confidence, first_seen, last_seen)
                 VALUES (?,?,?,?,?)
-            """, (addr, cluster_id, score, now, now))
+            """, (addr, cluster_id, 0.6, now, now))
 
             learned += 1
 
@@ -132,26 +99,13 @@ def run_cluster_expansion():
     exchange_clusters = get_exchange_clusters(c)
 
     for row in exchange_clusters:
-
         cluster_id = row["id"]
         name = row["name"]
 
-        anchors = c.execute("""
-            SELECT address
-            FROM cluster_addresses
-            WHERE cluster_id=? AND confidence >= 0.95
-        """, (cluster_id,)).fetchall()
-
-        for a in anchors:
-            try:
-                expand_exchange_cluster(
-                    c,
-                    cluster_id,
-                    a["address"],
-                    name
-                )
-            except Exception as e:
-                logger.exception(f"[CLUSTER] Expansion error: {e}")
+        try:
+            expand_exchange_cluster_from_db(c, cluster_id, name)
+        except Exception as e:
+            logger.exception(f"[CLUSTER] Expansion error: {e}")
 
     db.commit()
     db.close()

@@ -327,7 +327,7 @@ def ensure_db():
 if __name__ == "__main__":
     ensure_db()
 
-    #threading.Thread(target=clustering_loop, daemon=True).start()
+    threading.Thread(target=clustering_loop, daemon=True).start()
     threading.Thread(target=start_mempool_worker, daemon=True).start()
     threading.Thread(target=price_sampler, daemon=True).start()
     threading.Thread(target=exchange_flow_sampler, daemon=True).start()
