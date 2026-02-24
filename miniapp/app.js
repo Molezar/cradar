@@ -1,7 +1,6 @@
 let lastPrice = null;
-const alertsDisplayed = new Set();
 
-const ALERT_WHALE_BTC = window.ALERT_WHALE_BTC || 3000;
+const ALERT_WHALE_BTC = window.ALERT_WHALE_BTC || 1000;
 
 function fmtTime(ts) {
     const d = new Date(ts * 1000);
@@ -98,63 +97,6 @@ async function load() {
 }
 
 
-// =====================================================
-// ALERTS (SSE)
-// =====================================================
-
-function startAlerts() {
-
-    const evtSource = new EventSource("/events");
-
-    evtSource.onmessage = (e) => {
-
-        try {
-
-            const tx = JSON.parse(e.data);
-            if (!tx || !tx.txid) return;
-
-            const btc = Number(tx.btc || 0);
-            if (btc < ALERT_WHALE_BTC) return;
-            if (alertsDisplayed.has(tx.txid)) return;
-
-            alertsDisplayed.add(tx.txid);
-
-            const t = fmtTime(tx.time || Math.floor(Date.now() / 1000));
-
-            let arrow = "";
-            if (tx.flow === "DEPOSIT") arrow = "→";
-            else if (tx.flow === "WITHDRAW") arrow = "←";
-            else if (tx.flow === "INTERNAL") arrow = "↔";
-
-            const flowText = flowLabel(tx.flow);
-
-            const msg = `
-                ${t} &nbsp;
-                ${btc.toFixed(2)} BTC
-                ${arrow}
-                ${flowText}
-            `;
-
-            const alertsDiv = document.getElementById("alerts");
-
-            const div = document.createElement("div");
-            div.className = "alert";
-            div.innerHTML = msg;
-
-            alertsDiv.prepend(div);
-
-        } catch (err) {
-            console.error("Alert parsing error:", err);
-        }
-    };
-
-    evtSource.onerror = () => {
-        console.warn("SSE connection lost. Reconnecting...");
-    };
-}
-
-
 // INIT
 load();
 setInterval(load, 5000);
-startAlerts();

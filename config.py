@@ -20,7 +20,7 @@ class Config:
     API_URL = os.getenv("API_URL")
 
     MIN_WHALE_BTC = float(os.getenv("MIN_WHALE_BTC", "50"))
-    ALERT_WHALE_BTC = float(os.getenv("ALERT_WHALE_BTC", "3000"))
+    ALERT_WHALE_BTC = float(os.getenv("ALERT_WHALE_BTC", "1000"))
 
     DEBUG = ENV == "DEV"
     IS_PROD = ENV == "PROD"
