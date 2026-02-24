@@ -147,8 +147,11 @@ async def whale_listener():
                                         title = "Unknown flow"
                                         direction = ""
 
-                                    size = "HUGE" if btc >= 1000 else "Whale"
-
+                                    if btc >= 10000:
+                                        size = "HUGE"
+                                    else:
+                                        size = "Whale"
+                                
                                     msg = (
                                         f"{emoji} <b>{title}</b>\n"
                                         f"{size}: <b>{btc:.2f} BTC</b>\n"

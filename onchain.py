@@ -231,6 +231,14 @@ async def mempool_ws_worker():
                         """, (txid, flow_btc, now, from_c, to_c, flow_type))
 
                         if flow_btc >= ALERT_WHALE_BTC:
+
+                            # 1. Сохраняем в persistent alert_tx
+                            c.execute("""
+                                INSERT OR REPLACE INTO alert_tx
+                                (txid, btc, time, flow_type, from_cluster, to_cluster)
+                                VALUES (?,?,?,?,?,?)
+                            """, (txid, flow_btc, now, flow_type, from_c, to_c))
+                        
                             event = {
                                 "txid": txid,
                                 "btc": round(flow_btc, 4),
@@ -239,7 +247,8 @@ async def mempool_ws_worker():
                                 "to_cluster": to_c,
                                 "time": now
                             }
-                            logger.info(f"[EVENT] Queued {txid} {flow_btc} BTC {flow_type}")
+                        
+                            logger.info(f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}")
                             _events.put(event)
 
                     db.commit()

@@ -264,18 +264,39 @@ def prediction():
         logger.exception("Prediction endpoint error")
         return jsonify({"error": "Internal server error"}), 500
 
-
 @app.route("/events")
 def events():
+
     def stream():
-        q = get_event_queue()
         logger.info("[SSE] Client connected")
+
+        # 1️⃣ Сначала отдать последние 50 событий из БД
+        try:
+            db = get_db()
+            rows = db.execute("""
+                SELECT txid, btc, time, flow_type, from_cluster, to_cluster
+                FROM alert_tx
+                ORDER BY time DESC
+                LIMIT 50
+            """).fetchall()
+            db.close()
+
+            for r in reversed(rows):
+                event = dict(r)
+                yield f"data: {json.dumps(event)}\n\n"
+
+        except Exception:
+            logger.exception("[SSE] Failed to preload events")
+
+        # 2️⃣ Потом слушаем живую очередь
+        q = get_event_queue()
+
         while True:
             try:
                 tx = q.get(timeout=10)
-                logger.info(f"[SSE] Sending event {tx.get('txid')}")
-                tx["ts"] = int(time.time())
+                logger.info(f"[SSE] Sending live event {tx.get('txid')}")
                 yield f"data: {json.dumps(tx)}\n\n"
+
             except queue.Empty:
                 yield ":\n\n"
 
