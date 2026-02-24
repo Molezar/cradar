@@ -158,10 +158,10 @@ async def whale_listener():
 
                                     for cid in list(subscribers):
                                         try:
-                                            
-                                           logger.info(f"[BOT] Sending alert {txid}") 
-                                           await bot.send_message(cid, msg)
-                                        except:
+                                            logger.info(f"[BOT] Sending alert {txid} to {cid}")
+                                            await bot.send_message(cid, msg)
+                                        except Exception as e:
+                                            logger.error(f"[BOT] Send error for {cid}: {e}")
                                             subscribers.discard(cid)
 
             except asyncio.CancelledError:
