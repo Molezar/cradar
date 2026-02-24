@@ -86,8 +86,10 @@ async def whale_listener():
         while True:
             try:
                 async with aiohttp.ClientSession() as session:
+                    logger.info(f"[BOT] Connecting to {API}/events")
                     async with session.get(API + "/events", timeout=None, ssl=ssl_context) as resp:
 
+                        logger.info("[BOT] Connected to SSE")
                         async for chunk in resp.content.iter_any():
 
                             text = chunk.decode("utf-8", errors="ignore")
@@ -110,6 +112,7 @@ async def whale_listener():
                                         continue
 
                                     txid = tx.get("txid")
+                                    logger.info(f"[BOT] Received event {tx.get('txid')}")
                                     btc = float(tx.get("btc", 0))
                                     flow = tx.get("flow") or "UNKNOWN"
                                     from_cluster = tx.get("from_cluster")
@@ -155,7 +158,9 @@ async def whale_listener():
 
                                     for cid in list(subscribers):
                                         try:
-                                            await bot.send_message(cid, msg)
+                                            
+                                           logger.info(f"[BOT] Sending alert {txid}") 
+                                           await bot.send_message(cid, msg)
                                         except:
                                             subscribers.discard(cid)
 
@@ -169,14 +174,20 @@ async def whale_listener():
     except asyncio.CancelledError:
         logger.info("whale_listener stopped gracefully")
 
-
-# =====================================================
+# ==============================================
+# Hearbeat
+# ==============================================
+async def bot_heartbeat():
+    while True:
+        logger.info(f"[BOT] Alive. Subscribers: {len(subscribers)} Seen: {len(seen_txids)}")
+        await asyncio.sleep(120)
+# ==============================================
 # Main
-# =====================================================
+# ==============================================
 
 async def main():
     listener_task = asyncio.create_task(whale_listener())
-
+    heartbeat_task = asyncio.create_task(bot_heartbeat())
     try:
         await dp.start_polling(bot)
     finally:

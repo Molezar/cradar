@@ -157,6 +157,7 @@ def classify_flow(inputs, outputs, cursor):
 async def mempool_ws_worker():
 
     while True:
+        last_log = 0
         try:
             logger.info("[MEMPOOL] Connecting via WebSocket...")
 
@@ -172,6 +173,10 @@ async def mempool_ws_worker():
 
                 async for raw in ws:
 
+                    now_ts = time.time()
+                    if now_ts - last_log > 120:
+                        logger.info(f"[MEMPOOL] Alive. Seen txids: {len(_seen_txids)}")
+                        last_log = now_ts
                     try:
                         data = json.loads(raw)
                     except:
@@ -234,6 +239,7 @@ async def mempool_ws_worker():
                                 "to_cluster": to_c,
                                 "time": now
                             }
+                            logger.info(f"[EVENT] Queued {txid} {flow_btc} BTC {flow_type}")
                             _events.put(event)
 
                     db.commit()

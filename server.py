@@ -269,9 +269,11 @@ def prediction():
 def events():
     def stream():
         q = get_event_queue()
+        logger.info("[SSE] Client connected")
         while True:
             try:
                 tx = q.get(timeout=10)
+                logger.info(f"[SSE] Sending event {tx.get('txid')}")
                 tx["ts"] = int(time.time())
                 yield f"data: {json.dumps(tx)}\n\n"
             except queue.Empty:
