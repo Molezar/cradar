@@ -1,6 +1,6 @@
 body {
     background: #111;
-    color: #0f0;
+    color: #ccc;
     font-family: monospace;
     padding: 16px;
     margin: 0;
@@ -42,15 +42,33 @@ h1 {
     padding: 4px 0;
 }
 
-/* Обычная транзакция */
+/* Обычная транзакция — голубая */
 .whale {
-    color: #0f0;
+    color: #00cfff;
 }
 
-/* Крупная транзакция */
+/* Крупная транзакция — оранжевая */
 .whale.huge {
-    color: #ff4444;
+    color: #ff8c00;
     font-weight: bold;
+}
+
+/* FLOW цвета */
+.flow {
+    font-weight: bold;
+    margin-left: 4px;
+}
+
+.flow.deposit {
+    color: #ff3b3b; /* красный */
+}
+
+.flow.withdraw {
+    color: #00ff66; /* зелёный */
+}
+
+.flow.internal {
+    color: #ffd700; /* жёлтый */
 }
 
 /* Алерты */
@@ -59,10 +77,10 @@ h1 {
 }
 
 .alert {
-    background: #330000;
-    color: #ff4444;
+    background: #1a1a1a;
+    color: #ff8c00;
     padding: 6px 8px;
     margin-bottom: 6px;
-    border-left: 3px solid red;
+    border-left: 3px solid #ff8c00;
     font-weight: bold;
 }

@@ -8,6 +8,16 @@ function fmtTime(ts) {
     return d.toLocaleTimeString();
 }
 
+function flowLabel(flow) {
+    if (flow === "DEPOSIT")
+        return `<span class="flow deposit">DEPOSIT</span>`;
+    if (flow === "WITHDRAW")
+        return `<span class="flow withdraw">WITHDRAW</span>`;
+    if (flow === "INTERNAL")
+        return `<span class="flow internal">INTERNAL</span>`;
+    return "";
+}
+
 async function load() {
     try {
         const wr = await fetch("/whales?t=" + Date.now());
@@ -30,24 +40,24 @@ async function load() {
                 const isHuge = btc >= 1000;
                 const cls = isHuge ? "whale huge" : "whale";
 
-                let dir = "";
+                let dirArrow = "";
 
-                if (x.flow_type === "DEPOSIT") dir = "→ Exchange";
-                else if (x.flow_type === "WITHDRAW") dir = "← Exchange";
-                else if (x.flow_type === "INTERNAL") dir = "↔ Internal";
-                else dir = "";
+                if (x.flow_type === "DEPOSIT") dirArrow = "→";
+                else if (x.flow_type === "WITHDRAW") dirArrow = "←";
+                else if (x.flow_type === "INTERNAL") dirArrow = "↔";
+
+                const flowText = flowLabel(x.flow_type);
 
                 out += `
                     <div class="${cls}">
-                        ${t} &nbsp; ${btc.toFixed(2)} BTC ${dir}
+                        ${t} &nbsp;
+                        ${btc.toFixed(2)} BTC
+                        ${dirArrow}
+                        ${flowText}
                     </div>
                 `;
             }
         }
-
-        // =========================
-        // Price
-        // =========================
 
         if (pcj.price) {
             lastPrice = pcj.price;
@@ -56,11 +66,7 @@ async function load() {
         } else {
             document.getElementById("info").innerText = "BTC price…";
         }
-        
-        // =========================
-        // Prediction
-        // =========================
-        
+
         let pred = "<br><div class='pred'>=== AI MARKET FORECAST ===</div>";
 
         for (const horizon in pj) {
@@ -85,10 +91,6 @@ async function load() {
         document.getElementById("forecast").innerHTML = pred;
         document.getElementById("list").innerHTML = out;
 
-        // =========================
-        // Price
-        // =========================
-
     } catch (e) {
         document.getElementById("info").innerText = "API error";
         console.error(e);
@@ -109,28 +111,28 @@ function startAlerts() {
         try {
 
             const tx = JSON.parse(e.data);
-
             if (!tx || !tx.txid) return;
 
             const btc = Number(tx.btc || 0);
-
             if (btc < ALERT_WHALE_BTC) return;
-
             if (alertsDisplayed.has(tx.txid)) return;
+
             alertsDisplayed.add(tx.txid);
 
             const t = fmtTime(tx.time || Math.floor(Date.now() / 1000));
 
-            let dir = "";
+            let arrow = "";
+            if (tx.flow === "DEPOSIT") arrow = "→";
+            else if (tx.flow === "WITHDRAW") arrow = "←";
+            else if (tx.flow === "INTERNAL") arrow = "↔";
 
-            if (tx.flow === "DEPOSIT") dir = "→ Exchange";
-            else if (tx.flow === "WITHDRAW") dir = "← Exchange";
-            else if (tx.flow === "INTERNAL") dir = "↔ Internal";
+            const flowText = flowLabel(tx.flow);
 
             const msg = `
                 ${t} &nbsp;
                 ${btc.toFixed(2)} BTC
-                ${dir}
+                ${arrow}
+                ${flowText}
             `;
 
             const alertsDiv = document.getElementById("alerts");
@@ -152,10 +154,7 @@ function startAlerts() {
 }
 
 
-// =====================================================
 // INIT
-// =====================================================
-
 load();
 setInterval(load, 5000);
 startAlerts();
