@@ -53,7 +53,7 @@ secrets.json
 *.sqlite
 *.db
 *.db-journal
-
+database/applied_migrations.txt
 # Coverage
 htmlcov/
 .coverage

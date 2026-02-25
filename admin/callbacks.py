@@ -15,6 +15,7 @@ from admin.main.callbacks import (
     handle_view_volume
 )
 from admin.signal.callbacks import handle_signal
+from pathlib import Path
 
 logger = get_logger(__name__)
 ADMIN_ID = Config.ADMIN_ID
@@ -57,16 +58,37 @@ async def handle_admin_callbacks(callback: types.CallbackQuery):
                 reply_markup=get_recreate_db_confirm_kb()
             )
         elif data == "admin:recreate_db":
-            # Пересоздание БД
             try:
                 db_path = Config.DB_PATH
                 if db_path.exists():
-                    db_path.unlink()  # удаляем старую БД
-                init_db()  # создаём новую
-                await callback.message.edit_text("✅ База данных успешно пересоздана!", reply_markup=get_admin_main_kb())
+                    db_path.unlink()
+        
+                # --- Удаляем migration log в зависимости от ENV ---
+                env = Config.ENV.lower()
+        
+                if env == "prod":
+                    log_path = Path("/data/prod_applied_migrations.txt")
+                elif env == "staging":
+                    log_path = Path("/data/stag_applied_migrations.txt")
+                else:
+                    log_path = Path("database/applied_migrations.txt")
+        
+                if log_path.exists():
+                    log_path.unlink()
+        
+                init_db()
+        
+                await callback.message.edit_text(
+                    "✅ База данных успешно пересоздана!",
+                    reply_markup=get_admin_main_kb()
+                )
+        
             except Exception as e:
                 logger.exception(e)
-                await callback.message.edit_text("❌ Ошибка при пересоздании БД", reply_markup=get_admin_main_kb())
+                await callback.message.edit_text(
+                    "❌ Ошибка при пересоздании БД",
+                    reply_markup=get_admin_main_kb()
+        )
         
         elif data == "signal:get":
             await handle_signal(callback)
