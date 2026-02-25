@@ -40,5 +40,5 @@ def get_admin_main_kb():
         [InlineKeyboardButton(text="📂 Volume files", callback_data="admin:view_volume")],
         [InlineKeyboardButton(text="🎯 Сигнал", callback_data="signal:get")],
         #hidden to avoid.accidental use
-        #[InlineKeyboardButton(text="♻️ Пересоздать БД", callback_data="admin:recreate_db_confirm")]
+        [InlineKeyboardButton(text="♻️ Пересоздать БД", callback_data="admin:recreate_db_confirm")]
     ])
