@@ -69,7 +69,7 @@ async def handle_admin_callbacks(callback: types.CallbackQuery):
         
                 if env == "prod":
                     log_path = Path("/data/prod_applied_migrations.txt")
-                elif env == "staging":
+                elif env == "stag":
                     log_path = Path("/data/stag_applied_migrations.txt")
                 else:
                     log_path = Path("database/applied_migrations.txt")
