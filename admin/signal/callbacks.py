@@ -17,7 +17,7 @@ def calculate_signal():
     }
 
 
-async def handle_signal_callbacks(callback: types.CallbackQuery):
+async def handle_signal(callback: types.CallbackQuery):
     await callback.answer()
 
     try:
