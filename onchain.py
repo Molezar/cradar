@@ -216,7 +216,7 @@ async def mempool_ws_worker():
                             inputs, outputs, c
                         )
 
-                        if flow_type == "UNKNOWN":
+                        if flow_type in ("UNKNOWN", "INTERNAL"):
                             continue
 
                         c.execute("""
