@@ -38,5 +38,7 @@ def get_admin_main_kb():
         [InlineKeyboardButton(text="💾 Скачать БД", callback_data="admin:download_db_confirm")],
         [InlineKeyboardButton(text="📜 Скачать лог миграций", callback_data="admin:download_migrations_log_confirm")],
         [InlineKeyboardButton(text="📂 Volume files", callback_data="admin:view_volume")],
-        [InlineKeyboardButton(text="♻️ Пересоздать БД", callback_data="admin:recreate_db_confirm")]
+        [InlineKeyboardButton(text="🎯 Сигнал", callback_data="signal:get")],
+        #hidden to avoid.accidental use
+        #[InlineKeyboardButton(text="♻️ Пересоздать БД", callback_data="admin:recreate_db_confirm")]
     ])

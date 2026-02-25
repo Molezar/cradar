@@ -14,6 +14,7 @@ from admin.main.callbacks import (
     handle_download_migrations_log,
     handle_view_volume
 )
+from admin.signal.callbacks import handle_signal
 
 logger = get_logger(__name__)
 ADMIN_ID = Config.ADMIN_ID
@@ -67,6 +68,9 @@ async def handle_admin_callbacks(callback: types.CallbackQuery):
                 logger.exception(e)
                 await callback.message.edit_text("❌ Ошибка при пересоздании БД", reply_markup=get_admin_main_kb())
         
+        elif data == "signal:get":
+            await handle_signal(callback)
+            
         elif data == "admin_main":
             await callback.message.edit_text(
                 "👑 Админ-панель",
