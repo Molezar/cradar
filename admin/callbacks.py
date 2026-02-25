@@ -16,6 +16,7 @@ from admin.main.callbacks import (
 )
 from admin.signal.callbacks import handle_signal
 from pathlib import Path
+from migrate import run_migrations
 
 logger = get_logger(__name__)
 ADMIN_ID = Config.ADMIN_ID
@@ -77,6 +78,7 @@ async def handle_admin_callbacks(callback: types.CallbackQuery):
                     log_path.unlink()
         
                 init_db()
+                run_migrations()
         
                 await callback.message.edit_text(
                     "✅ База данных успешно пересоздана!",

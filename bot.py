@@ -349,6 +349,7 @@ async def bot_heartbeat():
 async def main():
     listener_task = asyncio.create_task(whale_listener())
     heartbeat_task = asyncio.create_task(bot_heartbeat())
+    print("BOT DB PATH:", Config.DB_PATH)
     monitor_task = asyncio.create_task(trade_monitor())
     try:
         await dp.start_polling(bot)

@@ -36,6 +36,7 @@ def run_migrations():
     migration_files = sorted(f for f in os.listdir(MIGRATIONS_DIR) if f.endswith(".sql"))
 
     conn = get_db()
+    print("MIGRATION DB PATH:", Config.DB_PATH)
     cursor = conn.cursor()
 
     for filename in migration_files:
