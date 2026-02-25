@@ -197,20 +197,16 @@ async def get_current_price():
     # ===============================
     # DEV / STAGING → MOCK PRICE
     # ===============================
-    if Config.ENV in ("dev", "staging"):
+    if Config.ENV in ("dev", "stag"):
         base_price = 50000
-
-        # создаём "движение" цены
         ts = int(time.time())
-        cycle = ts % 40  # цикл 40 секунд
-
-        # сначала растём 0 → +400
-        if cycle < 20:
-            price = base_price + (cycle * 20)
-        # потом падаем обратно
+        cycle = ts % 120
+    
+        if cycle < 60:
+            price = base_price + (cycle * 50)   # до +3000
         else:
-            price = base_price + ((40 - cycle) * 20)
-
+            price = base_price + ((120 - cycle) * 50)
+    
         return float(price)
 
     # ===============================
