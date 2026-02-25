@@ -10,10 +10,11 @@ from aiogram.filters import Command
 from aiogram.types import WebAppInfo, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.client.default import DefaultBotProperties
 
+from database.database import get_db
 from config import Config
 from logger import get_logger
 from admin import setup_admin
-
+from utils import calculate_system_stats
 logger = get_logger(__name__)
 
 BOT_TOKEN = Config.BOT_TOKEN
@@ -176,6 +177,163 @@ async def whale_listener():
 
     except asyncio.CancelledError:
         logger.info("whale_listener stopped gracefully")
+        
+# ==============================================
+# Price
+# ==============================================
+# ==============================================
+# Price
+# ==============================================
+async def get_current_price():
+    """
+    Возвращает цену BTC.
+
+    - В prod: берёт реальную цену через API (/price)
+    - В dev/staging: возвращает mock-цену,
+      которая плавно двигается вверх/вниз,
+      чтобы trade_monitor корректно тестировался
+    """
+
+    # ===============================
+    # DEV / STAGING → MOCK PRICE
+    # ===============================
+    if Config.ENV in ("dev", "staging"):
+        base_price = 50000
+
+        # создаём "движение" цены
+        ts = int(time.time())
+        cycle = ts % 40  # цикл 40 секунд
+
+        # сначала растём 0 → +400
+        if cycle < 20:
+            price = base_price + (cycle * 20)
+        # потом падаем обратно
+        else:
+            price = base_price + ((40 - cycle) * 20)
+
+        return float(price)
+
+    # ===============================
+    # PROD → REAL PRICE
+    # ===============================
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(API + "/price", ssl=ssl_context) as resp:
+                if resp.status != 200:
+                    return 0
+
+                data = await resp.json()
+                return float(data.get("price", 0))
+
+    except Exception as e:
+        logger.error(f"Price fetch error: {e}")
+        return 0
+
+# ==============================================
+# Trade Monitor
+# ==============================================
+async def trade_monitor():
+    await asyncio.sleep(5)
+
+    while True:
+        try:
+            price = await get_current_price()
+            if price <= 0:
+                await asyncio.sleep(5)
+                continue
+
+            conn = get_db()
+            c = conn.cursor()
+
+            c.execute("SELECT * FROM trade_signals WHERE status='OPEN'")
+            trades = c.fetchall()
+
+            for trade in trades:
+                direction = trade["direction"]
+                entry = trade["entry"]
+                stop = trade["stop"]
+                take = trade["take"]
+                position_size = trade["position_size"]
+                trade_id = trade["id"]
+
+                exit_price = None
+                status = None
+
+                if direction == "LONG":
+                    if price >= take:
+                        exit_price = take
+                        status = "TP"
+                    elif price <= stop:
+                        exit_price = stop
+                        status = "SL"
+
+                if not exit_price:
+                    continue
+
+                pnl = (exit_price - entry) * position_size
+
+                # Обновляем статус сделки
+                c.execute("""
+                    UPDATE trade_signals
+                    SET status=?, result=?
+                    WHERE id=?
+                """, (status, pnl, trade_id))
+
+                # обновляем баланс
+                c.execute("SELECT balance FROM demo_account WHERE id=1")
+                balance = c.fetchone()["balance"]
+                new_balance = balance + pnl
+
+                c.execute("""
+                    UPDATE demo_account
+                    SET balance=?, updated_at=?
+                    WHERE id=1
+                """, (new_balance, int(time.time())))
+
+                conn.commit()
+
+                # 🔔 Уведомление о закрытой сделке
+                msg = (
+                    f"✅ <b>Сделка закрыта</b>\n"
+                    f"Направление: {direction}\n"
+                    f"Entry: {entry}\n"
+                    f"Exit: {exit_price} ({status})\n"
+                    f"Размер позиции: {position_size:.6f} BTC\n"
+                    f"PnL: {pnl:+.2f} USDT\n"
+                    f"Баланс: {new_balance:.2f} USDT"
+                )
+
+                for cid in list(subscribers):
+                    try:
+                        await bot.send_message(cid, msg)
+                    except Exception as e:
+                        logger.error(f"Send error for {cid}: {e}")
+                        subscribers.discard(cid)
+
+                # 📊 Статистика системы
+                stats = calculate_system_stats()
+                stats_msg = (
+                    f"📊 <b>System Stats</b>\n\n"
+                    f"Всего сделок: {stats['total_trades']}\n"
+                    f"TP: {stats['wins']}\n"
+                    f"SL: {stats['losses']}\n"
+                    f"Winrate: {stats['winrate']}%\n\n"
+                    f"💰 Total PnL: {stats['total_pnl']:+.2f} USDT\n"
+                    f"💼 Баланс: {stats['balance']:.2f} USDT"
+                )
+                for cid in list(subscribers):
+                    try:
+                        await bot.send_message(cid, stats_msg)
+                    except Exception as e:
+                        logger.error(f"Send stats error for {cid}: {e}")
+                        subscribers.discard(cid)
+
+            conn.close()
+
+        except Exception as e:
+            logger.error(f"Trade monitor error: {e}")
+
+        await asyncio.sleep(5)
 
 # ==============================================
 # Hearbeat
@@ -191,6 +349,7 @@ async def bot_heartbeat():
 async def main():
     listener_task = asyncio.create_task(whale_listener())
     heartbeat_task = asyncio.create_task(bot_heartbeat())
+    monitor_task = asyncio.create_task(trade_monitor())
     try:
         await dp.start_polling(bot)
     finally:
