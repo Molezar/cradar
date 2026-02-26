@@ -33,14 +33,23 @@ async def calculate_signal():
 
     # пример выбора окна с наибольшим положительным прогнозом
     best_window = None
-    best_pct = 0
+    best_pct = None
+
     for w, v in data.items():
-        if v["pct"] > best_pct:
-            best_pct = v["pct"]
+        pct = float(v.get("pct", 0))
+
+    # выбираем самый сильный сигнал по модулю
+        if best_pct is None or abs(pct) > abs(best_pct):
+            best_pct = pct
             best_window = w
 
-    # направление: если прогноз >0 → LONG, <0 → SHORT
+    # ---- Нейтральная зона ----
+    if best_pct is None or abs(best_pct) < 0.001:
+        logger.info("[SIGNAL] No strong signal (neutral zone)")
+        return None
+
     direction = "LONG" if best_pct > 0 else "SHORT"
+    
     entry = price
     stop = price * (0.98 if direction=="LONG" else 1.02)
     take = price * (1.04 if direction=="LONG" else 0.96)
@@ -113,8 +122,13 @@ async def handle_signal(callback: types.CallbackQuery):
             )
             return
 
-        # --- получаем сигнал ---
-        direction, entry, stop, take, leverage = await calculate_signal()  # обязательно await!
+        result = await calculate_signal()
+
+        if result is None:
+            await callback.message.answer("⚖️ Сейчас нет чёткого сигнала. Рынок во флэте.")
+            return
+        
+        direction, entry, stop, take, leverage = result
 
         # --- мини-лог для проверки онлайн данных ---
         log_msg = (

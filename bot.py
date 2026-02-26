@@ -288,6 +288,7 @@ async def trade_monitor():
             logger.error(f"Trade monitor error: {e}")
 
         await asyncio.sleep(5)
+        
 # ==============================================
 # Hearbeat
 # ==============================================
