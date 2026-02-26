@@ -241,7 +241,7 @@ async def trade_monitor():
             # --- 1️⃣ Получаем открытые сделки (READ BLOCK) ---
             conn = None
             try:
-                conn = get_db(as_dict=False)
+                conn = get_db()
                 c = conn.cursor()
                 c.execute("SELECT * FROM trade_signals WHERE status='OPEN'")
                 trades = c.fetchall()
