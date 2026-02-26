@@ -73,9 +73,9 @@ async def start(message: types.Message):
     )
 
 
-# =====================================================
+# ==============================================
 # SSE Listener
-# =====================================================
+# ==============================================
 
 async def whale_listener():
     await asyncio.sleep(2)
@@ -177,10 +177,7 @@ async def whale_listener():
 
     except asyncio.CancelledError:
         logger.info("whale_listener stopped gracefully")
-        
-# ==============================================
-# Price
-# ==============================================
+
 # ==============================================
 # Price
 # ==============================================
@@ -230,6 +227,8 @@ async def get_current_price():
 # ==============================================
 async def trade_monitor():
     await asyncio.sleep(5)
+    logger.info("Trade monitor starting...")
+    logger.info(f"get_db in globals: {'get_db' in globals()}")
 
     while True:
         try:
