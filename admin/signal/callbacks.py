@@ -5,7 +5,8 @@ from aiogram import types
 from logger import get_logger
 from database.database import get_db
 from .keyboards import get_signal_kb
-from bot import get_current_price
+from services.price import get_current_price
+
 logger = get_logger(__name__)
 
 DEFAULT_LEVERAGE = 5

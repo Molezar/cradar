@@ -1,10 +1,8 @@
-import os
 import time
 import asyncio
 import aiohttp
 import json
-import ssl
-import certifi
+
 from database.database import get_db
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -15,30 +13,20 @@ from config import Config
 from logger import get_logger
 from admin import setup_admin
 from utils import calculate_system_stats
+from services.price import get_current_price
+from services.api_config import API, ssl_context
+
 logger = get_logger(__name__)
 
 BOT_TOKEN = Config.BOT_TOKEN
 WEBAPP_URL = Config.WEBAPP_URL
 
-# =====================================================
-# API URL
-# =====================================================
-
-if Config.IS_PROD:
-    API = os.getenv("API_URL")
-    if not API:
-        raise ValueError("API_URL env variable is missing on PROD!")
-    ssl_context = ssl.create_default_context(cafile=certifi.where())
-else:
-    API = "http://127.0.0.1:" + os.environ.get("PORT", "8000")
-    ssl_context = None
-
 MIN_WHALE_BTC = Config.MIN_WHALE_BTC
 ALERT_WHALE_BTC = Config.ALERT_WHALE_BTC
 
-# =====================================================
+# ==============================================
 # Bot init
-# =====================================================
+# ==============================================
 
 bot = Bot(
     BOT_TOKEN,
@@ -51,9 +39,9 @@ subscribers = set()
 seen_txids = set()  # защита от дублей
 
 
-# =====================================================
+# ==============================================
 # Start command
-# =====================================================
+# ==============================================
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
@@ -176,23 +164,6 @@ async def whale_listener():
 
     except asyncio.CancelledError:
         logger.info("whale_listener stopped gracefully")
-
-# ==============================================
-# Price
-# ==============================================
-async def get_current_price():
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(API + "/price", ssl=ssl_context) as resp:
-                if resp.status != 200:
-                    return 0
-
-                data = await resp.json()
-                return float(data.get("price", 0))
-
-    except Exception as e:
-        logger.error(f"Price fetch error: {e}")
-        return 0
 
 # ==============================================
 # Trade Monitor
