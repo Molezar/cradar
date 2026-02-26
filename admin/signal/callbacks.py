@@ -1,62 +1,14 @@
 import time
-import aiohttp
-from config import Config
 from aiogram import types
 from logger import get_logger
 from database.database import get_db
 from .keyboards import get_signal_kb
-from services.price import get_current_price
+from services.strategies import BaseStrategy
 
 logger = get_logger(__name__)
 
 DEFAULT_LEVERAGE = 5
 RISK_PER_TRADE = 0.02
-
-async def calculate_signal():
-    # берем текущую цену
-    price = await get_current_price()
-    logger.info(f"[SIGNAL] Current price: {price}")
-
-    # берём прогноз
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(Config.API_URL + "/prediction") as resp:
-                if resp.status != 200:
-                    raise ValueError(f"Prediction API returned status {resp.status}")
-                data = await resp.json()
-                logger.info(f"[SIGNAL] Prediction data received: {data}")
-        except Exception as e:
-            logger.error(f"[SIGNAL] Failed to fetch prediction: {e}")
-            # fallback к демо-сигналу
-            logger.info(f"[SIGNAL] Using fallback demo signal")
-            return "LONG", price, price * 0.98, price * 1.04, DEFAULT_LEVERAGE
-
-    # пример выбора окна с наибольшим положительным прогнозом
-    best_window = None
-    best_pct = None
-
-    for w, v in data.items():
-        pct = float(v.get("pct", 0))
-
-    # выбираем самый сильный сигнал по модулю
-        if best_pct is None or abs(pct) > abs(best_pct):
-            best_pct = pct
-            best_window = w
-
-    # ---- Нейтральная зона ----
-    if best_pct is None or abs(best_pct) < 0.001:
-        logger.info("[SIGNAL] No strong signal (neutral zone)")
-        return None
-
-    direction = "LONG" if best_pct > 0 else "SHORT"
-    
-    entry = price
-    stop = price * (0.98 if direction=="LONG" else 1.02)
-    take = price * (1.04 if direction=="LONG" else 0.96)
-    leverage = DEFAULT_LEVERAGE
-
-    logger.info(f"[SIGNAL] Calculated signal: {direction}, entry: {entry}, stop: {stop}, take: {take}, leverage: {leverage}")
-    return direction, entry, stop, take, leverage
     
 
 def get_demo_balance():
@@ -121,8 +73,9 @@ async def handle_signal(callback: types.CallbackQuery):
                 "⚠️ Уже есть открытая сделка.\nДождитесь её закрытия (TP или SL)."
             )
             return
-
-        result = await calculate_signal()
+        
+        strategy = BaseStrategy()
+        result = await strategy.generate_signal()
 
         if result is None:
             await callback.message.answer("⚖️ Сейчас нет чёткого сигнала. Рынок во флэте.")
