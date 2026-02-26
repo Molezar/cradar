@@ -12,25 +12,22 @@ DEFAULT_LEVERAGE = 5
 RISK_PER_TRADE = 0.02
 
 async def calculate_signal():
-    """
-    Возвращает реальный сигнал на основе:
-    - текущей цены BTC
-    - прогноза из сервера /prediction
-    - потенциального риска
-    """
     # берем текущую цену
     price = await get_current_price()
+    logger.info(f"[SIGNAL] Current price: {price}")
 
     # берём прогноз
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(Config.API_URL + "/prediction") as resp:
                 if resp.status != 200:
-                    raise ValueError("Prediction API returned error")
+                    raise ValueError(f"Prediction API returned status {resp.status}")
                 data = await resp.json()
+                logger.info(f"[SIGNAL] Prediction data received: {data}")
         except Exception as e:
-            logger.error(f"Failed to fetch prediction: {e}")
+            logger.error(f"[SIGNAL] Failed to fetch prediction: {e}")
             # fallback к демо-сигналу
+            logger.info(f"[SIGNAL] Using fallback demo signal")
             return "LONG", price, price * 0.98, price * 1.04, DEFAULT_LEVERAGE
 
     # пример выбора окна с наибольшим положительным прогнозом
@@ -48,17 +45,9 @@ async def calculate_signal():
     take = price * (1.04 if direction=="LONG" else 0.96)
     leverage = DEFAULT_LEVERAGE
 
+    logger.info(f"[SIGNAL] Calculated signal: {direction}, entry: {entry}, stop: {stop}, take: {take}, leverage: {leverage}")
     return direction, entry, stop, take, leverage
-
-def democalculate_signal():
-    """Возвращает пример сигнала (можно заменить на реальный алгоритм)."""
-    direction = "LONG"
-    entry = 50000
-    stop = 49000
-    take = 52000
-    leverage = DEFAULT_LEVERAGE
-    return direction, entry, stop, take, leverage
-
+    
 
 def get_demo_balance():
     """Возвращает баланс демо-счёта."""
@@ -112,7 +101,6 @@ def save_signal(direction, entry, stop, take, leverage, position_size):
         if conn:
             conn.close()
 
-
 async def handle_signal(callback: types.CallbackQuery):
     """Обработка сигнала через кнопку в Telegram."""
     await callback.answer()
@@ -123,12 +111,25 @@ async def handle_signal(callback: types.CallbackQuery):
             )
             return
 
-        direction, entry, stop, take, leverage = calculate_signal()
+        # --- получаем сигнал ---
+        direction, entry, stop, take, leverage = await calculate_signal()  # обязательно await!
+
+        # --- мини-лог для проверки онлайн данных ---
+        log_msg = (
+            f"🔍 <b>Debug Signal Check</b>\n"
+            f"Direction: {direction}\n"
+            f"Entry: {entry}\n"
+            f"Stop: {stop}\n"
+            f"Take: {take}\n"
+            f"Leverage: {leverage}x"
+        )
+        await callback.message.answer(log_msg, parse_mode="HTML")
+
         balance = get_demo_balance()
         position_size = calculate_position_size(balance, entry, stop)
-
         save_signal(direction, entry, stop, take, leverage, position_size)
 
+        # --- основной текст сигнала ---
         text = (
             f"📊 <b>Баланс:</b> {balance:.2f} USDT\n\n"
             f"🎯 <b>Рекомендация:</b> {direction}\n"

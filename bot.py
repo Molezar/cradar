@@ -76,7 +76,6 @@ async def start(message: types.Message):
 # ==============================================
 # SSE Listener
 # ==============================================
-
 async def whale_listener():
     await asyncio.sleep(2)
     logger.info("Starting whale_listener SSE task")
@@ -182,33 +181,6 @@ async def whale_listener():
 # Price
 # ==============================================
 async def get_current_price():
-    """
-    Возвращает цену BTC.
-
-    - В prod: берёт реальную цену через API (/price)
-    - В dev/staging: возвращает mock-цену,
-      которая плавно двигается вверх/вниз,
-      чтобы trade_monitor корректно тестировался
-    """
-
-    # ===============================
-    # DEV / STAGING → MOCK PRICE
-    # ===============================
-    if Config.ENV in ("dev", "stag"):
-        base_price = 50000
-        ts = int(time.time())
-        cycle = ts % 120
-    
-        if cycle < 60:
-            price = base_price + (cycle * 50)   # до +3000
-        else:
-            price = base_price + ((120 - cycle) * 50)
-    
-        return float(price)
-
-    # ===============================
-    # PROD → REAL PRICE
-    # ===============================
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(API + "/price", ssl=ssl_context) as resp:
@@ -352,10 +324,10 @@ async def bot_heartbeat():
     while True:
         logger.info(f"[BOT] Alive. Subscribers: {len(subscribers)} Seen: {len(seen_txids)}")
         await asyncio.sleep(120)
+        
 # ==============================================
 # Main
 # ==============================================
-
 async def main():
     listener_task = asyncio.create_task(whale_listener())
     heartbeat_task = asyncio.create_task(bot_heartbeat())

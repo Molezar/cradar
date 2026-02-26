@@ -14,7 +14,6 @@ MIN_WHALE_BTC = Config.MIN_WHALE_BTC
 ALERT_WHALE_BTC = Config.ALERT_WHALE_BTC
 SATOSHI = 100_000_000
 MEMPOOL_WS = "wss://mempool.emzy.de/api/v1/ws"
-#MEMPOOL_WS = "wss://mempool.space/api/v1/ws"
 
 _events = queue.Queue()
 _seen_txids = set()
@@ -24,9 +23,9 @@ def get_event_queue():
     return _events
 
 
-# =====================================================
+# ==============================================
 # Cluster resolution
-# =====================================================
+# ==============================================
 
 def resolve_cluster(address, cursor):
     r = cursor.execute("""
@@ -69,10 +68,9 @@ def create_behavioral_cluster(address, cursor):
     return cluster_id
 
 
-# =====================================================
+# ==============================================
 # Parsing
-# =====================================================
-
+# ==============================================
 def get_input_map(tx):
     m = {}
     for vin in tx.get("vin", []):
@@ -94,10 +92,9 @@ def get_output_map(tx):
     return m
 
 
-# =====================================================
+# ==============================================
 # Flow classification
-# =====================================================
-
+# ==============================================
 def classify_flow(inputs, outputs, cursor):
 
     in_clusters = {}
@@ -150,10 +147,9 @@ def classify_flow(inputs, outputs, cursor):
         # деньги ушли из кластера
         return best_cluster, None, "WITHDRAW", abs(best_net)
 
-# =====================================================
+# ==============================================
 # WebSocket Worker
-# =====================================================
-
+# ==============================================
 async def mempool_ws_worker():
 
     while True:
