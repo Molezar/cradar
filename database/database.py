@@ -3,27 +3,39 @@ from pathlib import Path
 from config import Config
 import time
 
-DB_PATH = Config.DB_PATH
+DB_PATH = Path(Config.DB_PATH)
 
 
-def get_db():
+def get_db(as_dict=True, retries=3, delay=0.3):
+
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(
-        DB_PATH,
-        timeout=60,
-        check_same_thread=False
-    )
+    for attempt in range(retries):
+        try:
+            conn = sqlite3.connect(
+                DB_PATH,
+                timeout=60,
+                check_same_thread=False
+            )
+            if as_dict:
+                conn.row_factory = sqlite3.Row
+            else:
+                conn.row_factory = None
 
-    conn.row_factory = sqlite3.Row
+            # WAL режим и настройки
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute("PRAGMA busy_timeout=5000;")
+            conn.execute("PRAGMA foreign_keys = ON")  # безопаснее для связей
 
-    # ВАЖНО: WAL режим
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA busy_timeout=5000;")
+            return conn
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e):
+                time.sleep(delay)
+            else:
+                raise
 
-    return conn
-
+    raise Exception("Database is locked after retries")
 
 def init_db():
     conn = get_db()

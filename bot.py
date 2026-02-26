@@ -11,7 +11,6 @@ from aiogram.filters import Command
 from aiogram.types import WebAppInfo, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.client.default import DefaultBotProperties
 
-from database.database import get_db
 from config import Config
 from logger import get_logger
 from admin import setup_admin
@@ -242,7 +241,7 @@ async def trade_monitor():
             # --- 1️⃣ Получаем открытые сделки (READ BLOCK) ---
             conn = None
             try:
-                conn = get_db()
+                conn = get_db(as_dict=False)
                 c = conn.cursor()
                 c.execute("SELECT * FROM trade_signals WHERE status='OPEN'")
                 trades = c.fetchall()
