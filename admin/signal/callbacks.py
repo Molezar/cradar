@@ -5,7 +5,7 @@ from aiogram import types
 from logger import get_logger
 from database.database import get_db
 from .keyboards import get_signal_kb
-
+from bot import get_current_price
 logger = get_logger(__name__)
 
 DEFAULT_LEVERAGE = 5
@@ -100,6 +100,7 @@ def save_signal(direction, entry, stop, take, leverage, position_size):
     finally:
         if conn:
             conn.close()
+
 
 async def handle_signal(callback: types.CallbackQuery):
     """Обработка сигнала через кнопку в Telegram."""
