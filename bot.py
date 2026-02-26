@@ -5,7 +5,7 @@ import aiohttp
 import json
 import ssl
 import certifi
-
+from database.database import get_db
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import WebAppInfo, ReplyKeyboardMarkup, KeyboardButton
