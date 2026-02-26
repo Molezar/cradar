@@ -1,4 +1,6 @@
 import time
+import aiohttp
+from config import Config
 from aiogram import types
 from logger import get_logger
 from database.database import get_db
@@ -9,8 +11,46 @@ logger = get_logger(__name__)
 DEFAULT_LEVERAGE = 5
 RISK_PER_TRADE = 0.02
 
+async def calculate_signal():
+    """
+    Возвращает реальный сигнал на основе:
+    - текущей цены BTC
+    - прогноза из сервера /prediction
+    - потенциального риска
+    """
+    # берем текущую цену
+    price = await get_current_price()
 
-def calculate_signal():
+    # берём прогноз
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(Config.API_URL + "/prediction") as resp:
+                if resp.status != 200:
+                    raise ValueError("Prediction API returned error")
+                data = await resp.json()
+        except Exception as e:
+            logger.error(f"Failed to fetch prediction: {e}")
+            # fallback к демо-сигналу
+            return "LONG", price, price * 0.98, price * 1.04, DEFAULT_LEVERAGE
+
+    # пример выбора окна с наибольшим положительным прогнозом
+    best_window = None
+    best_pct = 0
+    for w, v in data.items():
+        if v["pct"] > best_pct:
+            best_pct = v["pct"]
+            best_window = w
+
+    # направление: если прогноз >0 → LONG, <0 → SHORT
+    direction = "LONG" if best_pct > 0 else "SHORT"
+    entry = price
+    stop = price * (0.98 if direction=="LONG" else 1.02)
+    take = price * (1.04 if direction=="LONG" else 0.96)
+    leverage = DEFAULT_LEVERAGE
+
+    return direction, entry, stop, take, leverage
+
+def democalculate_signal():
     """Возвращает пример сигнала (можно заменить на реальный алгоритм)."""
     direction = "LONG"
     entry = 50000
