@@ -7,7 +7,6 @@ import json
 import time
 import requests
 import queue
-import sqlite3
 
 from config import Config
 from database.database import get_db, init_db
@@ -348,9 +347,6 @@ def ensure_db():
 
     if not db_path.exists():
         init_db()
-
-    conn = sqlite3.connect(db_path)
-    conn.close()
 
 
 def start_async_tasks_loop():
