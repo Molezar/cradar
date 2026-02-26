@@ -73,6 +73,7 @@ def price_sampler():
 
         time.sleep(30)
 
+
 # ==============================================
 # EXCHANGE FLOW SAMPLER
 # ==============================================
@@ -88,24 +89,19 @@ async def exchange_flow_sampler():
                 conn = get_db()
                 c = conn.cursor()
 
-                # Один SQL: агрегируем и сразу вставляем
                 c.execute("""
                     INSERT INTO exchange_flow (ts, cluster_id, flow_type, btc)
-
                     SELECT ?, to_cluster, 'DEPOSIT', SUM(btc)
                     FROM whale_classification
                     WHERE time > ? AND flow_type='DEPOSIT'
                     AND to_cluster IS NOT NULL
                     GROUP BY to_cluster
-
                     UNION ALL
-
                     SELECT ?, from_cluster, 'WITHDRAW', SUM(btc)
                     FROM whale_classification
                     WHERE time > ? AND flow_type='WITHDRAW'
                     AND from_cluster IS NOT NULL
                     GROUP BY from_cluster
-
                     ON CONFLICT(ts, cluster_id, flow_type)
                     DO UPDATE SET btc = excluded.btc
                 """, (now, since, now, since))
@@ -120,6 +116,7 @@ async def exchange_flow_sampler():
             logger.exception("Exchange flow sampler error")
 
         await asyncio.sleep(60)
+
 
 # ==============================================
 # TRAINER
@@ -136,8 +133,6 @@ async def trainer():
                 c = conn.cursor()
 
                 for w in WINDOWS:
-
-                    # --- Получаем p1 и p0 одним запросом ---
                     rows = c.execute("""
                         SELECT ts, price
                         FROM btc_price
@@ -157,7 +152,6 @@ async def trainer():
 
                     dp = (p1 - p0) / p0
 
-                    # --- Потоки за окно ---
                     row = c.execute("""
                         SELECT
                             COALESCE(SUM(CASE WHEN flow_type='DEPOSIT' THEN btc END), 0) as buy,
@@ -172,7 +166,6 @@ async def trainer():
 
                     value = dp / (abs(net_flow) + 1)
 
-                    # --- UPSERT вместо SELECT + IF ---
                     c.execute("""
                         INSERT INTO whale_correlation(window, weight, samples)
                         VALUES (?, ?, 1)
@@ -194,6 +187,7 @@ async def trainer():
             logger.exception("Trainer error")
 
         await asyncio.sleep(300)
+
 
 # ==============================================
 # API
@@ -267,7 +261,6 @@ def prediction():
 
         price = row["price"]
 
-        # Получаем все веса сразу одной командой
         weights = conn.execute(
             "SELECT window, weight FROM whale_correlation WHERE window IN ({})".format(
                 ",".join("?" * len(WINDOWS))
@@ -299,7 +292,6 @@ def events():
         logger.info("[SSE] Client connected")
         conn = None
         try:
-            # 1️⃣ Последние 50 событий
             conn = get_db()
             rows = conn.execute("""
                 SELECT txid, btc, time, flow_type, from_cluster, to_cluster
@@ -316,7 +308,6 @@ def events():
             if conn:
                 conn.close()
 
-        # 2️⃣ Живая очередь
         q = get_event_queue()
         while True:
             try:
@@ -342,22 +333,12 @@ def files(path):
 # STARTUP
 # =====================================================
 
-def start_mempool_worker():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(mempool_ws_worker())
-    except Exception:
-        logger.exception("Mempool worker crashed")
-
-
 def clustering_loop():
     while True:
         try:
             run_cluster_expansion()
         except Exception:
             logger.exception("Cluster expansion error")
-
         time.sleep(1800)
 
 
@@ -372,14 +353,25 @@ def ensure_db():
     conn.close()
 
 
+def start_async_tasks_loop():
+    """Запускает все async задачи в одном лупе"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.create_task(exchange_flow_sampler())
+    loop.create_task(trainer())
+    loop.create_task(mempool_ws_worker())
+    loop.run_forever()
+
+
 if __name__ == "__main__":
     ensure_db()
 
+    # Синхронные воркеры
     threading.Thread(target=clustering_loop, daemon=True).start()
-    threading.Thread(target=start_mempool_worker, daemon=True).start()
     threading.Thread(target=price_sampler, daemon=True).start()
-    threading.Thread(target=exchange_flow_sampler, daemon=True).start()
-    threading.Thread(target=trainer, daemon=True).start()
+
+    # Все async задачи в одном лупе
+    threading.Thread(target=start_async_tasks_loop, daemon=True).start()
 
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port, debug=Config.DEBUG, threaded=True)
