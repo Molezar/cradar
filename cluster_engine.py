@@ -7,6 +7,7 @@ from logger import get_logger
 logger = get_logger(__name__)
 
 SWEEP_THRESHOLD = 3
+LOOKBACK_DAYS = 30
 
 
 def get_exchange_clusters(cursor):
@@ -18,40 +19,38 @@ def get_exchange_clusters(cursor):
 
 
 def get_recent_whale_txs(cursor, since_ts):
-    return cursor.execute("""
+    rows = cursor.execute("""
         SELECT txid
         FROM whale_classification
         WHERE time > ?
     """, (since_ts,)).fetchall()
+    return [r["txid"] for r in rows]  # сразу возвращаем список txid
 
 
 def expand_exchange_cluster_from_db(cursor, cluster_id, name):
-
     logger.info(f"[CLUSTER] Expanding {name} from DB")
 
     now = int(time.time())
-    since = now - (30 * 24 * 3600)
+    since = now - (LOOKBACK_DAYS * 24 * 3600)
 
-    txs = get_recent_whale_txs(cursor, since)
+    txids = get_recent_whale_txs(cursor, since)
+    if not txids:
+        return
+
+    # 1️⃣ Собираем адреса всех tx_outputs сразу
+    placeholders = ",".join("?" * len(txids))
+    rows = cursor.execute(f"""
+        SELECT address
+        FROM tx_outputs
+        WHERE txid IN ({placeholders})
+    """, txids).fetchall()
 
     candidates = defaultdict(int)
-
-    for row in txs:
-        txid = row["txid"]
-
-        rows = cursor.execute("""
-            SELECT address
-            FROM tx_outputs
-            WHERE txid=?
-        """, (txid,)).fetchall()
-
-        for r in rows:
-            candidates[r["address"]] += 1
+    for r in rows:
+        candidates[r["address"]] += 1
 
     learned = 0
-
     for addr, count in candidates.items():
-
         if count < SWEEP_THRESHOLD:
             continue
 
@@ -62,7 +61,6 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
         """, (addr,)).fetchone()
 
         if existing:
-
             if existing["cluster_id"] == cluster_id:
                 cursor.execute("""
                     UPDATE cluster_addresses
@@ -70,14 +68,12 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
                         last_seen = ?
                     WHERE address=?
                 """, (now, addr))
-
         else:
             cursor.execute("""
                 INSERT INTO cluster_addresses
                 (address, cluster_id, confidence, first_seen, last_seen)
                 VALUES (?,?,?,?,?)
             """, (addr, cluster_id, 0.6, now, now))
-
             learned += 1
 
     if learned > 0:
@@ -92,23 +88,26 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
 
 
 def run_cluster_expansion():
+    db = None
+    try:
+        db = get_db()
+        c = db.cursor()
+        clusters = get_exchange_clusters(c)
 
-    db = get_db()
-    c = db.cursor()
+        for row in clusters:
+            cluster_id = row["id"]
+            name = row["name"]
+            try:
+                expand_exchange_cluster_from_db(c, cluster_id, name)
+            except Exception as e:
+                logger.exception(f"[CLUSTER] Expansion error for {name}: {e}")
 
-    exchange_clusters = get_exchange_clusters(c)
-
-    for row in exchange_clusters:
-        cluster_id = row["id"]
-        name = row["name"]
-
-        try:
-            expand_exchange_cluster_from_db(c, cluster_id, name)
-        except Exception as e:
-            logger.exception(f"[CLUSTER] Expansion error: {e}")
-
-    db.commit()
-    db.close()
+        db.commit()
+    except Exception:
+        logger.exception("[CLUSTER] Run expansion failed")
+    finally:
+        if db:
+            db.close()
 
 
 if __name__ == "__main__":

@@ -158,6 +158,7 @@ async def mempool_ws_worker():
 
     while True:
         last_log = 0
+
         try:
             logger.info("[MEMPOOL] Connecting via WebSocket...")
 
@@ -177,6 +178,7 @@ async def mempool_ws_worker():
                     if now_ts - last_log > 120:
                         logger.info(f"[MEMPOOL] Alive. Seen txids: {len(_seen_txids)}")
                         last_log = now_ts
+
                     try:
                         data = json.loads(raw)
                     except:
@@ -186,8 +188,6 @@ async def mempool_ws_worker():
                     if not txs:
                         continue
 
-                    db = get_db()
-                    c = db.cursor()
                     now = int(time.time())
 
                     for tx in txs:
@@ -205,54 +205,66 @@ async def mempool_ws_worker():
                         if total < MIN_WHALE_BTC:
                             continue
 
-                        for addr in list(inputs.keys()) + list(outputs.keys()):
-                            cid, _ = resolve_cluster(addr, c)
-                            if not cid:
-                                create_behavioral_cluster(addr, c)
-                            else:
-                                update_address_seen(addr, c)
+                        # --- DB WRITE BLOCK (очень короткий) ---
+                        conn = None
+                        try:
+                            conn = get_db()
+                            c = conn.cursor()
 
-                        from_c, to_c, flow_type, flow_btc = classify_flow(
-                            inputs, outputs, c
-                        )
+                            # кластеризация
+                            for addr in list(inputs.keys()) + list(outputs.keys()):
+                                cid, _ = resolve_cluster(addr, c)
+                                if not cid:
+                                    create_behavioral_cluster(addr, c)
+                                else:
+                                    update_address_seen(addr, c)
 
-                        if flow_type in ("UNKNOWN", "INTERNAL"):
-                            continue
+                            from_c, to_c, flow_type, flow_btc = classify_flow(
+                                inputs, outputs, c
+                            )
 
-                        c.execute("""
-                            INSERT OR IGNORE INTO whale_tx(txid, btc, time)
-                            VALUES (?,?,?)
-                        """, (txid, total, now))
+                            if flow_type in ("UNKNOWN", "INTERNAL"):
+                                continue
 
-                        c.execute("""
-                            INSERT OR REPLACE INTO whale_classification
-                            (txid, btc, time, from_cluster, to_cluster, flow_type)
-                            VALUES (?,?,?,?,?,?)
-                        """, (txid, flow_btc, now, from_c, to_c, flow_type))
-
-                        if flow_btc >= ALERT_WHALE_BTC:
-
-                            # 1. Сохраняем в persistent alert_tx
                             c.execute("""
-                                INSERT OR REPLACE INTO alert_tx
-                                (txid, btc, time, flow_type, from_cluster, to_cluster)
-                                VALUES (?,?,?,?,?,?)
-                            """, (txid, flow_btc, now, flow_type, from_c, to_c))
-                        
-                            event = {
-                                "txid": txid,
-                                "btc": round(flow_btc, 4),
-                                "flow": flow_type,
-                                "from_cluster": from_c,
-                                "to_cluster": to_c,
-                                "time": now
-                            }
-                        
-                            logger.info(f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}")
-                            _events.put(event)
+                                INSERT OR IGNORE INTO whale_tx(txid, btc, time)
+                                VALUES (?,?,?)
+                            """, (txid, total, now))
 
-                    db.commit()
-                    db.close()
+                            c.execute("""
+                                INSERT OR REPLACE INTO whale_classification
+                                (txid, btc, time, from_cluster, to_cluster, flow_type)
+                                VALUES (?,?,?,?,?,?)
+                            """, (txid, flow_btc, now, from_c, to_c, flow_type))
+
+                            if flow_btc >= ALERT_WHALE_BTC:
+                                c.execute("""
+                                    INSERT OR REPLACE INTO alert_tx
+                                    (txid, btc, time, flow_type, from_cluster, to_cluster)
+                                    VALUES (?,?,?,?,?,?)
+                                """, (txid, flow_btc, now, flow_type, from_c, to_c))
+
+                                event = {
+                                    "txid": txid,
+                                    "btc": round(flow_btc, 4),
+                                    "flow": flow_type,
+                                    "from_cluster": from_c,
+                                    "to_cluster": to_c,
+                                    "time": now
+                                }
+
+                                logger.info(f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}")
+                                _events.put(event)
+
+                            conn.commit()
+
+                        except Exception as db_error:
+                            logger.error(f"[MEMPOOL][DB] {db_error}")
+
+                        finally:
+                            if conn:
+                                conn.close()
+                        # --- END DB BLOCK ---
 
         except Exception as e:
             logger.error(f"[MEMPOOL] WS error: {e}")

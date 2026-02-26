@@ -1,33 +1,40 @@
 def calculate_system_stats():
     """
     Рассчитывает общую статистику по системе (без user_id)
+    Оптимизированная версия — 1 SQL запрос вместо 5
     """
-    conn = get_db()
-    c = conn.cursor()
 
-    # Всего закрытых сделок
-    c.execute("SELECT COUNT(*) as total FROM trade_signals WHERE status IN ('TP','SL')")
-    total_trades = c.fetchone()["total"] or 0
+    conn = None
+    try:
+        conn = get_db()
+        c = conn.cursor()
 
-    # TP / SL
-    c.execute("SELECT COUNT(*) as wins FROM trade_signals WHERE status='TP'")
-    wins = c.fetchone()["wins"] or 0
+        c.execute("""
+            SELECT
+                COUNT(CASE WHEN status IN ('TP','SL') THEN 1 END) AS total_trades,
+                COUNT(CASE WHEN status = 'TP' THEN 1 END) AS wins,
+                COUNT(CASE WHEN status = 'SL' THEN 1 END) AS losses,
+                COALESCE(SUM(CASE WHEN status IN ('TP','SL') THEN result END), 0) AS total_pnl
+            FROM trade_signals
+        """)
 
-    c.execute("SELECT COUNT(*) as losses FROM trade_signals WHERE status='SL'")
-    losses = c.fetchone()["losses"] or 0
+        row = c.fetchone()
 
-    # Winrate %
+        total_trades = row["total_trades"] or 0
+        wins = row["wins"] or 0
+        losses = row["losses"] or 0
+        total_pnl = row["total_pnl"] or 0
+
+        # баланс отдельно (это другая таблица)
+        c.execute("SELECT balance FROM demo_account WHERE id=1")
+        balance_row = c.fetchone()
+        balance = balance_row["balance"] if balance_row else 0
+
+    finally:
+        if conn:
+            conn.close()
+
     winrate = (wins / total_trades * 100) if total_trades > 0 else 0
-
-    # Total PnL
-    c.execute("SELECT SUM(result) as pnl FROM trade_signals WHERE status IN ('TP','SL')")
-    total_pnl = c.fetchone()["pnl"] or 0
-
-    # Текущий баланс
-    c.execute("SELECT balance FROM demo_account WHERE id=1")
-    balance = c.fetchone()["balance"] or 0
-
-    conn.close()
 
     return {
         "total_trades": total_trades,

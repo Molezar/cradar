@@ -25,9 +25,9 @@ MINIAPP_DIR = os.path.join(BASE_DIR, "miniapp")
 
 WINDOWS = [600, 3600]
 
-# =====================================================
+# ==============================================
 # BTC PRICE
-# =====================================================
+# ==============================================
 
 def fetch_btc_price():
     try:
@@ -47,146 +47,166 @@ def price_sampler():
         try:
             price = fetch_btc_price()
             if price:
-                db = get_db()
-                db.execute(
-                    "INSERT OR REPLACE INTO btc_price(ts, price) VALUES (?,?)",
-                    (int(time.time()), price)
-                )
-                db.commit()
-                db.close()
+
+                now = int(time.time())
+
+                conn = None
+                try:
+                    conn = get_db()
+                    c = conn.cursor()
+
+                    c.execute("""
+                        INSERT INTO btc_price(ts, price)
+                        VALUES (?, ?)
+                        ON CONFLICT(ts) DO UPDATE SET
+                            price=excluded.price
+                    """, (now, price))
+
+                    conn.commit()
+
+                finally:
+                    if conn:
+                        conn.close()
+
         except Exception:
             logger.exception("Price sampler error")
 
         time.sleep(30)
 
-
-# =====================================================
+# ==============================================
 # EXCHANGE FLOW SAMPLER
-# =====================================================
+# ==============================================
 
-def exchange_flow_sampler():
+async def exchange_flow_sampler():
     while True:
         try:
             now = int(time.time())
             since = now - 600
 
-            db = get_db()
-            c = db.cursor()
+            conn = None
+            try:
+                conn = get_db()
+                c = conn.cursor()
 
-            rows = c.execute("""
-                SELECT to_cluster as cluster_id, 'DEPOSIT' as flow_type, SUM(btc) as total
-                FROM whale_classification
-                WHERE time > ? AND flow_type='DEPOSIT'
-                GROUP BY to_cluster
-
-                UNION ALL
-
-                SELECT from_cluster as cluster_id, 'WITHDRAW' as flow_type, SUM(btc) as total
-                FROM whale_classification
-                WHERE time > ? AND flow_type='WITHDRAW'
-                GROUP BY from_cluster
-            """, (since, since)).fetchall()
-
-            for r in rows:
-                if not r["cluster_id"]:
-                    continue
-
+                # Один SQL: агрегируем и сразу вставляем
                 c.execute("""
-                    INSERT OR REPLACE INTO exchange_flow
-                    (ts, cluster_id, flow_type, btc)
-                    VALUES (?,?,?,?)
-                """, (now, r["cluster_id"], r["flow_type"], r["total"] or 0))
+                    INSERT INTO exchange_flow (ts, cluster_id, flow_type, btc)
 
-            db.commit()
-            db.close()
+                    SELECT ?, to_cluster, 'DEPOSIT', SUM(btc)
+                    FROM whale_classification
+                    WHERE time > ? AND flow_type='DEPOSIT'
+                    AND to_cluster IS NOT NULL
+                    GROUP BY to_cluster
+
+                    UNION ALL
+
+                    SELECT ?, from_cluster, 'WITHDRAW', SUM(btc)
+                    FROM whale_classification
+                    WHERE time > ? AND flow_type='WITHDRAW'
+                    AND from_cluster IS NOT NULL
+                    GROUP BY from_cluster
+
+                    ON CONFLICT(ts, cluster_id, flow_type)
+                    DO UPDATE SET btc = excluded.btc
+                """, (now, since, now, since))
+
+                conn.commit()
+
+            finally:
+                if conn:
+                    conn.close()
 
         except Exception:
             logger.exception("Exchange flow sampler error")
 
-        time.sleep(60)
+        await asyncio.sleep(60)
 
-
-# =====================================================
+# ==============================================
 # TRAINER
-# =====================================================
+# ==============================================
 
-def trainer():
+async def trainer():
     while True:
         try:
-            db = get_db()
-            c = db.cursor()
+            now = int(time.time())
 
-            for w in WINDOWS:
-                now = int(time.time())
+            conn = None
+            try:
+                conn = get_db()
+                c = conn.cursor()
 
-                p1 = c.execute(
-                    "SELECT price FROM btc_price WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
-                    (now,)
-                ).fetchone()
+                for w in WINDOWS:
 
-                p0 = c.execute(
-                    "SELECT price FROM btc_price WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
-                    (now - w,)
-                ).fetchone()
+                    # --- Получаем p1 и p0 одним запросом ---
+                    rows = c.execute("""
+                        SELECT ts, price
+                        FROM btc_price
+                        WHERE ts <= ?
+                        AND ts >= ?
+                        ORDER BY ts DESC
+                    """, (now, now - w)).fetchall()
 
-                if not p0 or not p1:
-                    continue
+                    if not rows:
+                        continue
 
-                dp = (p1["price"] - p0["price"]) / p0["price"]
+                    p1 = rows[0]["price"]
+                    p0 = rows[-1]["price"]
 
-                row = c.execute("""
-                    SELECT
-                        SUM(CASE WHEN flow_type='DEPOSIT' THEN btc ELSE 0 END) as buy,
-                        SUM(CASE WHEN flow_type='WITHDRAW' THEN btc ELSE 0 END) as sell
-                    FROM exchange_flow
-                    WHERE ts > ?
-                """, (now - w,)).fetchone()
+                    if not p0:
+                        continue
 
-                buy = row["buy"] or 0
-                sell = row["sell"] or 0
-                net_flow = buy - sell
+                    dp = (p1 - p0) / p0
 
-                corr = c.execute(
-                    "SELECT weight, samples FROM whale_correlation WHERE window=?",
-                    (w,)
-                ).fetchone()
+                    # --- Потоки за окно ---
+                    row = c.execute("""
+                        SELECT
+                            COALESCE(SUM(CASE WHEN flow_type='DEPOSIT' THEN btc END), 0) as buy,
+                            COALESCE(SUM(CASE WHEN flow_type='WITHDRAW' THEN btc END), 0) as sell
+                        FROM exchange_flow
+                        WHERE ts > ?
+                    """, (now - w,)).fetchone()
 
-                value = dp / (abs(net_flow) + 1)
+                    buy = row["buy"]
+                    sell = row["sell"]
+                    net_flow = buy - sell
 
-                if corr:
-                    weight = corr["weight"]
-                    samples = corr["samples"]
-                    new_weight = (weight * samples + value) / (samples + 1)
+                    value = dp / (abs(net_flow) + 1)
 
-                    c.execute(
-                        "UPDATE whale_correlation SET weight=?, samples=? WHERE window=?",
-                        (new_weight, samples + 1, w)
-                    )
-                else:
-                    c.execute(
-                        "INSERT INTO whale_correlation(window, weight, samples) VALUES (?,?,1)",
-                        (w, value)
-                    )
+                    # --- UPSERT вместо SELECT + IF ---
+                    c.execute("""
+                        INSERT INTO whale_correlation(window, weight, samples)
+                        VALUES (?, ?, 1)
+                        ON CONFLICT(window) DO UPDATE SET
+                            weight = (
+                                (whale_correlation.weight * whale_correlation.samples + excluded.weight)
+                                / (whale_correlation.samples + 1)
+                            ),
+                            samples = whale_correlation.samples + 1
+                    """, (w, value))
 
-            db.commit()
-            db.close()
+                conn.commit()
+
+            finally:
+                if conn:
+                    conn.close()
 
         except Exception:
             logger.exception("Trainer error")
 
-        time.sleep(300)
+        await asyncio.sleep(300)
 
-
-# =====================================================
+# ==============================================
 # API
-# =====================================================
+# ==============================================
 
 @app.route("/whales")
 def whales():
+    conn = None
     try:
-        db = get_db()
+        conn = get_db()
+        c = conn.cursor()
 
-        rows = db.execute("""
+        rows = c.execute("""
             SELECT
                 txid,
                 btc,
@@ -200,103 +220,108 @@ def whales():
             LIMIT 50
         """, (Config.MIN_WHALE_BTC,)).fetchall()
 
-        db.close()
+        result = [dict(r) for r in rows]
 
         return jsonify({
-            "count": len(rows),
-            "whales": [dict(r) for r in rows]
+            "count": len(result),
+            "whales": result
         })
 
     except Exception:
         logger.exception("Whales endpoint error")
         return jsonify({"error": "Internal server error"}), 500
 
+    finally:
+        if conn:
+            conn.close()
+
 
 @app.route("/price")
 def price():
+    conn = None
     try:
-        db = get_db()
-        r = db.execute(
+        conn = get_db()
+        row = conn.execute(
             "SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1"
         ).fetchone()
-        db.close()
-        return jsonify({"price": r["price"] if r else None})
+        return jsonify({"price": row["price"] if row else None})
     except Exception:
         logger.exception("Price endpoint error")
         return jsonify({"error": "Internal server error"}), 500
+    finally:
+        if conn:
+            conn.close()
 
 
 @app.route("/prediction")
 def prediction():
+    conn = None
     try:
-        db = get_db()
-
-        price_row = db.execute(
+        conn = get_db()
+        row = conn.execute(
             "SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1"
         ).fetchone()
 
-        if not price_row:
+        if not row:
             return jsonify({})
 
-        price = price_row["price"]
+        price = row["price"]
+
+        # Получаем все веса сразу одной командой
+        weights = conn.execute(
+            "SELECT window, weight FROM whale_correlation WHERE window IN ({})".format(
+                ",".join("?" * len(WINDOWS))
+            ),
+            WINDOWS
+        ).fetchall()
+
         out = {}
-
-        for w in WINDOWS:
-            r = db.execute(
-                "SELECT weight FROM whale_correlation WHERE window=?",
-                (w,)
-            ).fetchone()
-
-            if not r:
-                continue
-
+        for r in weights:
             pct = r["weight"] * 100
-
-            out[str(w)] = {
+            out[str(r["window"])] = {
                 "pct": round(pct, 2),
                 "target": round(price * (1 + pct / 100), 2)
             }
 
-        db.close()
         return jsonify(out)
 
     except Exception:
         logger.exception("Prediction endpoint error")
         return jsonify({"error": "Internal server error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
 
 @app.route("/events")
 def events():
-
     def stream():
         logger.info("[SSE] Client connected")
-
-        # 1️⃣ Сначала отдать последние 50 событий из БД
+        conn = None
         try:
-            db = get_db()
-            rows = db.execute("""
+            # 1️⃣ Последние 50 событий
+            conn = get_db()
+            rows = conn.execute("""
                 SELECT txid, btc, time, flow_type, from_cluster, to_cluster
                 FROM alert_tx
                 ORDER BY time DESC
                 LIMIT 50
             """).fetchall()
-            db.close()
 
             for r in reversed(rows):
-                event = dict(r)
-                yield f"data: {json.dumps(event)}\n\n"
-
+                yield f"data: {json.dumps(dict(r))}\n\n"
         except Exception:
             logger.exception("[SSE] Failed to preload events")
+        finally:
+            if conn:
+                conn.close()
 
-        # 2️⃣ Потом слушаем живую очередь
+        # 2️⃣ Живая очередь
         q = get_event_queue()
-
         while True:
             try:
                 tx = q.get(timeout=10)
-                logger.info(f"[SSE] Sending live event {tx.get('txid')}")
                 yield f"data: {json.dumps(tx)}\n\n"
-
             except queue.Empty:
                 yield ":\n\n"
 

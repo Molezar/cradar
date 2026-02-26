@@ -238,12 +238,18 @@ async def trade_monitor():
                 await asyncio.sleep(5)
                 continue
 
-            conn = get_db()
-            c = conn.cursor()
+            # --- 1️⃣ Получаем открытые сделки (READ BLOCK) ---
+            conn = None
+            try:
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT * FROM trade_signals WHERE status='OPEN'")
+                trades = c.fetchall()
+            finally:
+                if conn:
+                    conn.close()
 
-            c.execute("SELECT * FROM trade_signals WHERE status='OPEN'")
-            trades = c.fetchall()
-
+            # --- 2️⃣ Обрабатываем каждую сделку отдельно ---
             for trade in trades:
                 direction = trade["direction"]
                 entry = trade["entry"]
@@ -268,27 +274,37 @@ async def trade_monitor():
 
                 pnl = (exit_price - entry) * position_size
 
-                # Обновляем статус сделки
-                c.execute("""
-                    UPDATE trade_signals
-                    SET status=?, result=?
-                    WHERE id=?
-                """, (status, pnl, trade_id))
+                # --- 3️⃣ WRITE BLOCK (очень короткий) ---
+                conn = None
+                try:
+                    conn = get_db()
+                    c = conn.cursor()
 
-                # обновляем баланс
-                c.execute("SELECT balance FROM demo_account WHERE id=1")
-                balance = c.fetchone()["balance"]
-                new_balance = balance + pnl
+                    # обновляем сделку
+                    c.execute("""
+                        UPDATE trade_signals
+                        SET status=?, result=?
+                        WHERE id=?
+                    """, (status, pnl, trade_id))
 
-                c.execute("""
-                    UPDATE demo_account
-                    SET balance=?, updated_at=?
-                    WHERE id=1
-                """, (new_balance, int(time.time())))
+                    # обновляем баланс
+                    c.execute("SELECT balance FROM demo_account WHERE id=1")
+                    balance = c.fetchone()["balance"]
+                    new_balance = balance + pnl
 
-                conn.commit()
+                    c.execute("""
+                        UPDATE demo_account
+                        SET balance=?, updated_at=?
+                        WHERE id=1
+                    """, (new_balance, int(time.time())))
 
-                # 🔔 Уведомление о закрытой сделке
+                    conn.commit()
+
+                finally:
+                    if conn:
+                        conn.close()
+
+                # --- 4️⃣ Только теперь отправляем сообщения ---
                 msg = (
                     f"✅ <b>Сделка закрыта</b>\n"
                     f"Направление: {direction}\n"
@@ -306,8 +322,9 @@ async def trade_monitor():
                         logger.error(f"Send error for {cid}: {e}")
                         subscribers.discard(cid)
 
-                # 📊 Статистика системы
+                # --- 5️⃣ Статистика (отдельный DB блок внутри функции) ---
                 stats = calculate_system_stats()
+
                 stats_msg = (
                     f"📊 <b>System Stats</b>\n\n"
                     f"Всего сделок: {stats['total_trades']}\n"
@@ -317,6 +334,7 @@ async def trade_monitor():
                     f"💰 Total PnL: {stats['total_pnl']:+.2f} USDT\n"
                     f"💼 Баланс: {stats['balance']:.2f} USDT"
                 )
+
                 for cid in list(subscribers):
                     try:
                         await bot.send_message(cid, stats_msg)
@@ -324,13 +342,10 @@ async def trade_monitor():
                         logger.error(f"Send stats error for {cid}: {e}")
                         subscribers.discard(cid)
 
-            conn.close()
-
         except Exception as e:
             logger.error(f"Trade monitor error: {e}")
 
         await asyncio.sleep(5)
-
 # ==============================================
 # Hearbeat
 # ==============================================
