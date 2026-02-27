@@ -73,7 +73,7 @@ def compute_volatility(window=50):
             conn.close()
 
 def aggregate_signals(signals):
-    logger.info("---- AGGREGATE START ----")
+    logger.info("---- AGGREGATE START (INTRADAY MODE) ----")
 
     for s in signals:
         logger.info(
@@ -85,8 +85,9 @@ def aggregate_signals(signals):
         )
 
     trend_signals = [s for s in signals if s.name in ["EMA", "MA_CROSS"]]
-    filter_signals = [s for s in signals if s.name in ["ADX", "VOLATILITY"]]
-    timing_signals = [s for s in signals if s.name in ["RSI"]]
+    rsi_signal = next((s for s in signals if s.name == "RSI"), None)
+    adx_signal = next((s for s in signals if s.name == "ADX"), None)
+    vol_signal = next((s for s in signals if s.name == "VOLATILITY"), None)
 
     if not trend_signals:
         logger.info("No trend signals → returning None")
@@ -95,25 +96,33 @@ def aggregate_signals(signals):
     total_score = sum(s.score() for s in trend_signals)
     logger.info(f"Trend score sum: {total_score}")
 
-    # фильтры
-    for s in filter_signals:
-        logger.info(f"Applying filter {s.name} with confidence {s.confidence}")
-        total_score *= s.confidence
+    # --- ADX пороговый фильтр ---
+    if adx_signal:
+        logger.info(f"ADX confidence: {adx_signal.confidence}")
+        if adx_signal.confidence < 0.01:
+            logger.info("ADX too weak → FLAT")
+            return None
 
-    # тайминг
-    for s in timing_signals:
-        logger.info(f"Applying timing {s.name} with confidence {s.confidence}")
-        total_score *= s.confidence
+    # --- RSI должен подтверждать направление ---
+    if rsi_signal and rsi_signal.direction != "NEUTRAL":
+        logger.info("RSI confirms direction")
+        total_score *= 1.2
+    else:
+        logger.info("RSI neutral → small penalty")
+        total_score *= 0.8
 
-    vol_signal = next((s for s in signals if s.name == "VOLATILITY"), None)
+    # --- Volatility минимальный фильтр ---
     volatility = vol_signal.meta.get("volatility") if vol_signal else 0
+    logger.info(f"Volatility: {volatility}")
 
-    base_threshold = 0.15
-    threshold = base_threshold + volatility / 1000
+    if volatility < 20:
+        logger.info("Volatility too low → FLAT")
+        return None
 
+    # --- intraday threshold ---
+    threshold = 0.02
     logger.info(f"Final total_score: {total_score}")
     logger.info(f"Threshold: {threshold}")
-    logger.info(f"Volatility: {volatility}")
 
     if abs(total_score) < threshold:
         logger.info("Score below threshold → FLAT")

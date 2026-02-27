@@ -26,10 +26,9 @@ class BaseStrategy:
         # Передаём max_leverage для динамического расчета
         return build_trade(aggregated, price, base_leverage=self.max_leverage)
 
-
 class AggressiveStrategy(BaseStrategy):
     def __init__(self):
-        super().__init__(max_leverage=10, min_threshold=0.15)
+        super().__init__(max_leverage=5, min_threshold=0.02)
 
 
 class ConservativeStrategy(BaseStrategy):

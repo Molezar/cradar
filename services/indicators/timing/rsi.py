@@ -2,7 +2,7 @@
 from services.indicators.base import IndicatorSignal
 from database.database import get_db
 
-async def get_rsi_signal(price, period=14):
+async def get_rsi_signal(price, period=7):
     conn = None
     try:
         conn = get_db()
