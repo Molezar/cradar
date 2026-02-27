@@ -7,7 +7,10 @@ from services.indicators.timing.rsi import get_rsi_signal
 from services.indicators.filter.adx import get_adx_signal
 from database.database import get_db
 import math
+from services.market_data import get_market_candles
+from config import Config
 from logger import get_logger
+
 logger = get_logger(__name__)
 
 VOLATILITY_FACTOR = 1.0  # можно менять, чтобы усилить/ослабить влияние волатильности на сигнал
@@ -53,21 +56,36 @@ async def collect_indicators(price):
 
     return signals
 
-
 def compute_volatility(window=50):
-    """Возвращает стандартное отклонение цен за последнее окно"""
+    """
+    Стандартное отклонение закрытий свечей
+    """
+
     conn = None
+
+    if Config.USE_API_CANDLES:
+        # В async нельзя await здесь, поэтому volatility оставим DB-based
+        # API режим будет использовать уже записанные свечи
+        pass
+
     try:
         conn = get_db()
-        rows = conn.execute(
-            "SELECT price FROM btc_price ORDER BY ts DESC LIMIT ?", (window,)
-        ).fetchall()
-        prices = [r["price"] for r in rows]
-        if len(prices) < 2:
+        rows = conn.execute("""
+            SELECT close FROM btc_candles_1m
+            ORDER BY open_time DESC
+            LIMIT ?
+        """, (window,)).fetchall()
+
+        closes = [r["close"] for r in rows]
+
+        if len(closes) < 2:
             return 0
-        mean = sum(prices) / len(prices)
-        variance = sum((p - mean) ** 2 for p in prices) / len(prices)
+
+        mean = sum(closes) / len(closes)
+        variance = sum((c - mean) ** 2 for c in closes) / len(closes)
+
         return math.sqrt(variance)
+
     finally:
         if conn:
             conn.close()

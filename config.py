@@ -1,3 +1,4 @@
+# config.py
 from dotenv import load_dotenv
 import os
 from pathlib import Path
@@ -6,7 +7,7 @@ load_dotenv()
 
 class Config:
     ENV = os.getenv("ENV", "DEV").upper()
-
+    
     if ENV == "PROD":
         DB_PATH = Path("/data/radar_prod.db")
     elif ENV == "STAG":
@@ -21,6 +22,8 @@ class Config:
 
     MIN_WHALE_BTC = float(os.getenv("MIN_WHALE_BTC", "50"))
     ALERT_WHALE_BTC = float(os.getenv("ALERT_WHALE_BTC", "1000"))
-
+    
+    USE_API_CANDLES = True
+    
     DEBUG = ENV == "DEV"
     IS_PROD = ENV == "PROD"

@@ -2,6 +2,7 @@
 from services.signal_engine import collect_indicators, aggregate_signals
 from services.risk_engine import build_trade
 from services.price import get_current_price
+from services.market_data import get_market_candles
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -14,6 +15,13 @@ class BaseStrategy:
     async def generate_signal(self):
         price = await get_current_price()
         if price == 0:
+            return None
+        
+        # 🔥 получаем свечи
+        candles = await get_market_candles(limit=100)
+        
+        if not candles or len(candles) < 20:
+            logger.warning("Not enough candles")
             return None
 
         indicators = await collect_indicators(price)

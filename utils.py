@@ -1,3 +1,4 @@
+#utility.py
 def calculate_system_stats():
     """
     Рассчитывает общую статистику по системе (без user_id)

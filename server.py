@@ -1,4 +1,5 @@
-from flask import Flask, jsonify, send_from_directory, Response
+#server.py
+from flask import Flask, jsonify, send_from_directory, request, Response
 from flask_cors import CORS
 import os
 import threading
@@ -41,6 +42,24 @@ def fetch_btc_price():
         return None
 
 
+def fetch_binance_klines(limit=2):
+    try:
+        r = requests.get(
+            "https://api.binance.com/api/v3/klines",
+            params={
+                "symbol": "BTCUSDT",
+                "interval": "1m",
+                "limit": limit
+            },
+            timeout=10
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        logger.warning(f"Failed to fetch klines: {e}")
+        return []
+        
+
 def price_sampler():
     while True:
         try:
@@ -73,6 +92,53 @@ def price_sampler():
         time.sleep(30)
 
 
+def candle_sampler():
+    while True:
+        try:
+            klines = fetch_binance_klines(limit=2)
+
+            if not klines:
+                time.sleep(30)
+                continue
+
+            conn = None
+            try:
+                conn = get_db()
+                c = conn.cursor()
+
+                for k in klines:
+                    open_time = int(k[0] / 1000)
+
+                    c.execute("""
+                        INSERT INTO btc_candles_1m
+                        (open_time, open, high, low, close, volume)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(open_time) DO UPDATE SET
+                            open=excluded.open,
+                            high=excluded.high,
+                            low=excluded.low,
+                            close=excluded.close,
+                            volume=excluded.volume
+                    """, (
+                        open_time,
+                        float(k[1]),
+                        float(k[2]),
+                        float(k[3]),
+                        float(k[4]),
+                        float(k[5])
+                    ))
+
+                conn.commit()
+
+            finally:
+                if conn:
+                    conn.close()
+
+        except Exception:
+            logger.exception("Candle sampler error")
+
+        time.sleep(30)
+        
 # ==============================================
 # EXCHANGE FLOW SAMPLER
 # ==============================================
@@ -246,6 +312,30 @@ def price():
             conn.close()
 
 
+@app.route("/candles")
+def candles():
+    limit = int(request.args.get("limit", 100))
+
+    conn = None
+    try:
+        conn = get_db()
+        rows = conn.execute("""
+            SELECT open_time, open, high, low, close, volume
+            FROM btc_candles_1m
+            ORDER BY open_time DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+
+        return jsonify([dict(r) for r in rows])
+
+    except Exception:
+        logger.exception("Candles endpoint error")
+        return jsonify({"error": "Internal server error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 @app.route("/prediction")
 def prediction():
     conn = None
@@ -365,6 +455,7 @@ if __name__ == "__main__":
     # Синхронные воркеры
     threading.Thread(target=clustering_loop, daemon=True).start()
     threading.Thread(target=price_sampler, daemon=True).start()
+    threading.Thread(target=candle_sampler, daemon=True).start()
 
     # Все async задачи в одном лупе
     threading.Thread(target=start_async_tasks_loop, daemon=True).start()
