@@ -1,47 +1,47 @@
 # services/indicators/trend/ema.py
 from services.indicators.base import IndicatorSignal
-from database.database import get_db
 
 EMA_FAST = 20
 EMA_SLOW = 50
 
 
 def calculate_ema(prices, period):
-    multiplier = 2 / (period + 1)
-    ema = prices[-period]  # стартовая точка
+    """
+    Правильный EMA:
+    1. Начинаем с SMA первых period значений
+    2. Затем считаем EMA по всей серии
+    """
 
-    for price in prices[-period+1:]:
+    if len(prices) < period:
+        return None
+
+    multiplier = 2 / (period + 1)
+
+    # стартовая EMA = SMA первых period свечей
+    sma = sum(prices[:period]) / period
+    ema = sma
+
+    # продолжаем по остальным данным
+    for price in prices[period:]:
         ema = (price - ema) * multiplier + ema
 
     return ema
 
 
-async def get_ema_signal(price):
-    conn = None
-    try:
-        conn = get_db()
-        rows = conn.execute("""
-            SELECT close
-            FROM btc_candles_1m
-            ORDER BY open_time DESC
-            LIMIT ?
-        """, (EMA_SLOW + 5,)).fetchall()
-
-        closes = [r["close"] for r in rows]
-
-    finally:
-        if conn:
-            conn.close()
+def get_ema_signal(candles):
+    closes = [float(c["close"]) for c in candles]
 
     if len(closes) < EMA_SLOW:
         return IndicatorSignal("EMA", "NEUTRAL", 0, 0)
 
-    closes = list(reversed(closes))  # старые → новые
-
     ema_fast = calculate_ema(closes, EMA_FAST)
     ema_slow = calculate_ema(closes, EMA_SLOW)
 
+    if ema_fast is None or ema_slow is None:
+        return IndicatorSignal("EMA", "NEUTRAL", 0, 0)
+
     direction = "LONG" if ema_fast > ema_slow else "SHORT"
+
     strength = (ema_fast - ema_slow) / ema_slow
     confidence = min(abs(strength) * 20, 1)
 
@@ -50,5 +50,8 @@ async def get_ema_signal(price):
         direction=direction,
         strength=strength,
         confidence=confidence,
-        meta={"ema_fast": ema_fast, "ema_slow": ema_slow}
+        meta={
+            "ema_fast": ema_fast,
+            "ema_slow": ema_slow
+        }
     )

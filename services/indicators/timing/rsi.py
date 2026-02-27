@@ -1,31 +1,14 @@
-# services/indicators/timing/rsi.py
+# services/indicators/trend/rsi.py
 from services.indicators.base import IndicatorSignal
-from database.database import get_db
 
 RSI_PERIOD = 7
 
 
-async def get_rsi_signal(price, period=RSI_PERIOD):
-    conn = None
-    try:
-        conn = get_db()
-        rows = conn.execute("""
-            SELECT close
-            FROM btc_candles_1m
-            ORDER BY open_time DESC
-            LIMIT ?
-        """, (period + 1,)).fetchall()
-
-        closes = [r["close"] for r in rows]
-
-    finally:
-        if conn:
-            conn.close()
+def get_rsi_signal(candles, period=RSI_PERIOD):
+    closes = [float(c["close"]) for c in candles]
 
     if len(closes) < period + 1:
         return IndicatorSignal("RSI", "NEUTRAL", 0, 0)
-
-    closes = list(reversed(closes))
 
     gains = []
     losses = []
@@ -59,9 +42,9 @@ async def get_rsi_signal(price, period=RSI_PERIOD):
     confidence = strength
 
     return IndicatorSignal(
-        "RSI",
-        direction,
-        strength if direction != "NEUTRAL" else 0,
-        confidence,
+        name="RSI",
+        direction=direction,
+        strength=strength if direction != "NEUTRAL" else 0,
+        confidence=confidence,
         meta={"rsi": rsi}
     )

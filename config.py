@@ -23,7 +23,5 @@ class Config:
     MIN_WHALE_BTC = float(os.getenv("MIN_WHALE_BTC", "50"))
     ALERT_WHALE_BTC = float(os.getenv("ALERT_WHALE_BTC", "1000"))
     
-    USE_API_CANDLES = True
-    
     DEBUG = ENV == "DEV"
     IS_PROD = ENV == "PROD"

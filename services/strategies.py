@@ -17,14 +17,13 @@ class BaseStrategy:
         if price == 0:
             return None
         
-        # 🔥 получаем свечи
         candles = await get_market_candles(limit=100)
-        
-        if not candles or len(candles) < 20:
+
+        if not candles or len(candles) < 50:
             logger.warning("Not enough candles")
             return None
-
-        indicators = await collect_indicators(price)
+        
+        indicators = collect_indicators(candles)
         logger.info(f"Indicators: {[s.name for s in indicators]}")
 
         aggregated = aggregate_signals(indicators)

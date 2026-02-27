@@ -1,42 +1,27 @@
-# services/indicators/filter/adx.py
+# services/indicators/trend/adx.py
 from services.indicators.base import IndicatorSignal
-from database.database import get_db
 
 ADX_PERIOD = 14
 
 
-async def get_adx_signal(price, period=ADX_PERIOD):
-    conn = None
-    try:
-        conn = get_db()
-        rows = conn.execute("""
-            SELECT high, low, close
-            FROM btc_candles_1m
-            ORDER BY open_time DESC
-            LIMIT ?
-        """, (period + 1,)).fetchall()
-
-        candles = [dict(r) for r in rows]
-
-    finally:
-        if conn:
-            conn.close()
-
+def get_adx_signal(candles, period=ADX_PERIOD):
     if len(candles) < period + 1:
         return IndicatorSignal("ADX", "NEUTRAL", 0, 0)
 
-    candles = list(reversed(candles))
+    highs = [float(c["high"]) for c in candles]
+    lows = [float(c["low"]) for c in candles]
+    closes = [float(c["close"]) for c in candles]
 
     tr_list = []
     plus_dm = []
     minus_dm = []
 
     for i in range(1, len(candles)):
-        high = candles[i]["high"]
-        low = candles[i]["low"]
-        prev_high = candles[i - 1]["high"]
-        prev_low = candles[i - 1]["low"]
-        prev_close = candles[i - 1]["close"]
+        high = highs[i]
+        low = lows[i]
+        prev_high = highs[i - 1]
+        prev_low = lows[i - 1]
+        prev_close = closes[i - 1]
 
         tr = max(
             high - low,
@@ -56,7 +41,7 @@ async def get_adx_signal(price, period=ADX_PERIOD):
     minus_di = 100 * (sum(minus_dm[-period:]) / period) / atr if atr else 0
 
     dx = abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) else 0
-    adx = dx  # упрощённая версия без сглаживания
+    adx = dx  # упрощённая версия
 
     confidence = min(adx / 50, 1.0)
 
@@ -65,5 +50,9 @@ async def get_adx_signal(price, period=ADX_PERIOD):
         direction="NEUTRAL",
         strength=0,
         confidence=confidence,
-        meta={"adx": adx}
+        meta={
+            "adx": adx,
+            "plus_di": plus_di,
+            "minus_di": minus_di
+        }
     )
