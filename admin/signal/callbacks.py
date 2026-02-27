@@ -1,3 +1,4 @@
+# admin/signal/callbacks.py
 import time
 from aiogram import types
 from logger import get_logger
@@ -76,7 +77,8 @@ async def handle_signal(callback: types.CallbackQuery):
         
         strategy = AggressiveStrategy()
         result = await strategy.generate_signal()
-
+        logger.info(f"Strategy result: {result}")
+        
         if result is None:
             await callback.message.answer("⚖️ Сейчас нет чёткого сигнала. Рынок во флэте.")
             return

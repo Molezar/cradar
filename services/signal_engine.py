@@ -6,8 +6,9 @@ from services.indicators.trend.ema import get_ema_signal
 from services.indicators.timing.rsi import get_rsi_signal
 from services.indicators.filter.adx import get_adx_signal
 from database.database import get_db
-
 import math
+from logger import get_logger
+logger = get_logger(__name__)
 
 VOLATILITY_FACTOR = 1.0  # можно менять, чтобы усилить/ослабить влияние волатильности на сигнал
 
@@ -71,37 +72,58 @@ def compute_volatility(window=50):
         if conn:
             conn.close()
 
-
 def aggregate_signals(signals):
+    logger.info("---- AGGREGATE START ----")
+
+    for s in signals:
+        logger.info(
+            f"[{s.name}] "
+            f"dir={s.direction} "
+            f"strength={s.strength} "
+            f"confidence={s.confidence} "
+            f"score={s.score()}"
+        )
+
     trend_signals = [s for s in signals if s.name in ["EMA", "MA_CROSS"]]
     filter_signals = [s for s in signals if s.name in ["ADX", "VOLATILITY"]]
     timing_signals = [s for s in signals if s.name in ["RSI"]]
 
     if not trend_signals:
+        logger.info("No trend signals → returning None")
         return None
 
-    # основной тренд
     total_score = sum(s.score() for s in trend_signals)
+    logger.info(f"Trend score sum: {total_score}")
 
-    # apply filter (ослабление тренда)
+    # фильтры
     for s in filter_signals:
+        logger.info(f"Applying filter {s.name} with confidence {s.confidence}")
         total_score *= s.confidence
 
-    # apply timing (уточнение момента входа)
+    # тайминг
     for s in timing_signals:
+        logger.info(f"Applying timing {s.name} with confidence {s.confidence}")
         total_score *= s.confidence
 
-    # --- динамический порог по волатильности ---
-    # берем Volatility из signals
     vol_signal = next((s for s in signals if s.name == "VOLATILITY"), None)
     volatility = vol_signal.meta.get("volatility") if vol_signal else 0
-    base_threshold = 0.15  # минимальный порог
+
+    base_threshold = 0.15
     threshold = base_threshold + volatility / 1000
 
+    logger.info(f"Final total_score: {total_score}")
+    logger.info(f"Threshold: {threshold}")
+    logger.info(f"Volatility: {volatility}")
+
     if abs(total_score) < threshold:
+        logger.info("Score below threshold → FLAT")
+        logger.info("---- AGGREGATE END ----")
         return None
 
     direction = "LONG" if total_score > 0 else "SHORT"
+
+    logger.info(f"FINAL SIGNAL: {direction}")
+    logger.info("---- AGGREGATE END ----")
 
     return {
         "direction": direction,
