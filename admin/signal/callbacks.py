@@ -119,3 +119,56 @@ async def handle_signal(callback: types.CallbackQuery):
     except Exception as e:
         logger.exception(f"Signal error: {e}")
         await callback.message.answer("⚠️ Ошибка расчёта сигнала")
+
+async def handle_cancel_trade(
+    callback: types.CallbackQuery,
+    refresh: bool = False
+):
+    await callback.answer()
+
+    conn = None
+    try:
+        conn = get_db()
+
+        row = conn.execute("""
+            SELECT id FROM trade_signals 
+            WHERE status='OPEN' 
+            ORDER BY created_at DESC 
+            LIMIT 1
+        """).fetchone()
+
+        if not row:
+            if not refresh:
+                await callback.message.answer("Нет открытой сделки.")
+            # если refresh=True — просто продолжаем
+        else:
+            trade_id = row["id"]
+
+            conn.execute("""
+                UPDATE trade_signals
+                SET status='CANCELLED'
+                WHERE id=?
+            """, (trade_id,))
+
+            conn.commit()
+
+            if not refresh:
+                await callback.message.answer(
+                    "❌ Сделка закрыта вручную (CANCELLED)."
+                )
+
+    except Exception as e:
+        logger.exception(f"Cancel error: {e}")
+        await callback.message.answer("❌ Ошибка при отмене сделки")
+        return
+
+    finally:
+        if conn:
+            conn.close()
+
+    # 🔥 если это refresh — запускаем новый сигнал
+    if refresh:
+        await handle_signal(callback)
+
+async def handle_refresh_signal(callback: types.CallbackQuery):
+    await handle_cancel_trade(callback, refresh=True)

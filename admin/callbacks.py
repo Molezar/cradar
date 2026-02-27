@@ -2,6 +2,9 @@ from aiogram import types
 from logger import get_logger
 from database.database import init_db
 from config import Config
+from pathlib import Path
+from migrate import run_migrations
+
 from .keyboards import (
     get_admin_main_kb,
     get_admin_to_main_bt,
@@ -14,9 +17,11 @@ from admin.main.callbacks import (
     handle_download_migrations_log,
     handle_view_volume
 )
-from admin.signal.callbacks import handle_signal
-from pathlib import Path
-from migrate import run_migrations
+from admin.signal.callbacks import (
+    handle_signal,
+    handle_cancel_trade,
+    handle_refresh_signal
+)
 
 logger = get_logger(__name__)
 ADMIN_ID = Config.ADMIN_ID
@@ -94,6 +99,10 @@ async def handle_admin_callbacks(callback: types.CallbackQuery):
         
         elif data == "signal:get":
             await handle_signal(callback)
+        elif data == "cancel:trade":
+            await handle_cancel_trade(callback)
+        elif data == "signal:refresh":
+            await handle_refresh_signal(callback)
             
         elif data == "admin_main":
             await callback.message.edit_text(
