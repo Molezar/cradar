@@ -1,3 +1,4 @@
+#services/strategies.py
 from services.signal_engine import collect_indicators, aggregate_signals
 from services.risk_engine import build_trade
 from services.price import get_current_price
@@ -6,27 +7,31 @@ from logger import get_logger
 logger = get_logger(__name__)
 
 class BaseStrategy:
+    def __init__(self, max_leverage=5, min_threshold=0.2):
+        self.max_leverage = max_leverage
+        self.min_threshold = min_threshold
 
     async def generate_signal(self):
-
         price = await get_current_price()
         if price == 0:
             return None
 
         indicators = await collect_indicators(price)
         logger.info(f"Indicators: {[s.name for s in indicators]}")
-        
-        aggregated = aggregate_signals(indicators)
 
-        if aggregated is None:
+        aggregated = aggregate_signals(indicators)
+        if aggregated is None or abs(aggregated["score"]) < self.min_threshold:
             return None
 
-        return build_trade(aggregated, price)
+        # Передаём max_leverage для динамического расчета
+        return build_trade(aggregated, price, base_leverage=self.max_leverage)
 
 
 class AggressiveStrategy(BaseStrategy):
-    pass
+    def __init__(self):
+        super().__init__(max_leverage=10, min_threshold=0.15)
 
 
 class ConservativeStrategy(BaseStrategy):
-    pass
+    def __init__(self):
+        super().__init__(max_leverage=3, min_threshold=0.25)

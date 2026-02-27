@@ -3,7 +3,7 @@ from aiogram import types
 from logger import get_logger
 from database.database import get_db
 from .keyboards import get_signal_kb
-from services.strategies import BaseStrategy
+from services.strategies import AggressiveStrategy
 
 logger = get_logger(__name__)
 
@@ -74,7 +74,7 @@ async def handle_signal(callback: types.CallbackQuery):
             )
             return
         
-        strategy = BaseStrategy()
+        strategy = AggressiveStrategy()
         result = await strategy.generate_signal()
 
         if result is None:

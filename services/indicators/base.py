@@ -1,3 +1,4 @@
+# services/indicators/base.py
 class IndicatorSignal:
     def __init__(self, name, direction, strength, confidence, meta=None):
         self.name = name
