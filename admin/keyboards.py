@@ -1,3 +1,4 @@
+# admin/keyboards.py
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
@@ -39,6 +40,7 @@ def get_admin_main_kb():
         [InlineKeyboardButton(text="📜 Скачать лог миграций", callback_data="admin:download_migrations_log_confirm")],
         [InlineKeyboardButton(text="📂 Volume files", callback_data="admin:view_volume")],
         [InlineKeyboardButton(text="🎯 Сигнал", callback_data="signal:get")],
+        [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin:edit_balance")],
         #hidden to avoid.accidental use
         [InlineKeyboardButton(text="♻️ Пересоздать БД", callback_data="admin:recreate_db_confirm")]
     ])

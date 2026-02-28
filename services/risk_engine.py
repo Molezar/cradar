@@ -11,7 +11,7 @@ def build_trade(signal_data, price, base_leverage=5):
 
     # Короткие intraday буферы
     stop_buffer = 0.005 + volatility / 5000   # ~0.5–1%
-    take_buffer = 0.008 + score * 0.01        # 0.8–1.5%
+    take_buffer = 0.008 + score * 0.001        # 0.8–1.5%
 
     if direction == "LONG":
         stop = price * (1 - stop_buffer)

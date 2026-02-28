@@ -1,3 +1,4 @@
+-- 004_add_btc_candles.sql
 CREATE TABLE IF NOT EXISTS btc_candles_1m (
     open_time INTEGER PRIMARY KEY,
     open REAL NOT NULL,

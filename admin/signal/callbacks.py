@@ -5,6 +5,8 @@ from logger import get_logger
 from database.database import get_db
 from .keyboards import get_signal_kb
 from services.strategies import AggressiveStrategy
+from aiogram.fsm.context import FSMContext
+    from aiogram import Dispatcher
 
 logger = get_logger(__name__)
 
@@ -174,3 +176,11 @@ async def handle_cancel_trade(
 
 async def handle_refresh_signal(callback: types.CallbackQuery):
     await handle_cancel_trade(callback, refresh=True)
+    
+async def handle_edit_balance(callback: types.CallbackQuery):
+    """Отправляет сообщение с просьбой ввести новый баланс."""
+    await callback.answer()
+    await callback.message.answer("💰 Введите новый баланс демо-счёта (только цифры):")
+    
+    state: FSMContext = Dispatcher.get_current().current_state(chat=callback.message.chat.id)
+    await state.set_state("awaiting_new_balance")

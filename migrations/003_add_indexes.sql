@@ -1,4 +1,4 @@
-
+-- 003_add_indexes.sql
 -- BTC price timestamp index
 CREATE INDEX IF NOT EXISTS idx_price_ts ON btc_price(ts);
 

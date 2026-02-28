@@ -1,3 +1,4 @@
+#admin/callbacks.py
 from aiogram import types
 from logger import get_logger
 from database.database import init_db
@@ -22,6 +23,12 @@ from admin.signal.callbacks import (
     handle_cancel_trade,
     handle_refresh_signal
 )
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.context import FSMContext
+from admin.signal.messages import handle_new_balance
+
+class BalanceStates(StatesGroup):
+    awaiting_new_balance = State()
 
 logger = get_logger(__name__)
 ADMIN_ID = Config.ADMIN_ID
@@ -104,6 +111,14 @@ async def handle_admin_callbacks(callback: types.CallbackQuery):
         elif data == "signal:refresh":
             await handle_refresh_signal(callback)
             
+        elif data == "admin:edit_balance":
+            await callback.answer()
+            await callback.message.answer("💰 Введите новый баланс демо-счёта (только цифры):")
+            
+            # Ставим FSM-состояние
+            state: FSMContext = callback._bot.get_current().current_state(chat=callback.message.chat.id)
+            await state.set_state(BalanceStates.awaiting_new_balance)
+        
         elif data == "admin_main":
             await callback.message.edit_text(
                 "👑 Админ-панель",
