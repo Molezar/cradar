@@ -94,7 +94,7 @@ def aggregate_signals(signals):
     logger.info(f"RSI score: {rsi_score}")
 
     # --- ADX SCORE ---
-    adx_score = adx_signal.score() if adx_signal else 0
+    adx_score = adx_signal.confidence if adx_signal else 0
     logger.info(f"ADX score: {adx_score}")
 
     # --- WEIGHTED MODEL ---
@@ -113,9 +113,17 @@ def aggregate_signals(signals):
     volatility_multiplier = min(volatility / 100, 2)
     total_score *= volatility_multiplier
 
+    # Масштабируем score
+    total_score *= 100
+    
     logger.info(f"Final total_score: {total_score}")
 
-    direction = "LONG" if total_score > 0 else "SHORT"
+    if total_score > 0:
+        direction = "LONG"
+    elif total_score < 0:
+        direction = "SHORT"
+    else:
+        return None
 
     logger.info(f"FINAL SIGNAL: {direction}")
     logger.info("---- AGGREGATE END ----")

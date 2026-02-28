@@ -14,7 +14,7 @@ class BaseStrategy:
 
     async def generate_signal(self):
         price = await get_current_price()
-        if price == 0:
+        if not price:
             return None
         
         candles = await get_market_candles(limit=100)
@@ -27,7 +27,20 @@ class BaseStrategy:
         logger.info(f"Indicators: {[s.name for s in indicators]}")
 
         aggregated = aggregate_signals(indicators)
-        if aggregated is None or abs(aggregated["score"]) < self.min_threshold:
+
+        if aggregated is None:
+            logger.info("Aggregated is None")
+            return None
+        
+        logger.info(f"MIN_THRESHOLD: {self.min_threshold}")
+        logger.info(f"FINAL SCORE: {aggregated['score']}")
+        logger.info(
+            f"ABS SCORE: {abs(aggregated['score'])} | "
+            f"THRESHOLD: {self.min_threshold}"
+        )
+        
+        if abs(aggregated["score"]) < self.min_threshold:
+            logger.info("Score below threshold → FLAT")
             return None
 
         # Передаём max_leverage для динамического расчета
