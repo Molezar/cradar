@@ -6,7 +6,7 @@ from database.database import get_db
 from .keyboards import get_signal_kb
 from services.strategies import AggressiveStrategy
 from aiogram.fsm.context import FSMContext
-    from aiogram import Dispatcher
+from aiogram import Dispatcher
 
 logger = get_logger(__name__)
 
