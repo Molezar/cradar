@@ -43,7 +43,10 @@ seen_txids = set()  # защита от дублей
 # ==============================================
 # Start command
 # ==============================================
-
+@dp.message()
+async def debug_all(message: types.Message):
+    logger.info(f"ANY MESSAGE RECEIVED: {message.text}")
+    
 @dp.message(Command("start"))
 async def start(message: types.Message):
     subscribers.add(message.chat.id)
@@ -306,6 +309,7 @@ async def main():
     heartbeat_task = asyncio.create_task(bot_heartbeat())
     print("BOT DB PATH:", Config.DB_PATH)
     monitor_task = asyncio.create_task(trade_monitor())
+    logger.info("Polling starting...")
     try:
         await dp.start_polling(bot)
     finally:
