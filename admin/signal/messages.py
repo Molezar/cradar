@@ -5,7 +5,8 @@ from logger import get_logger
 
 logger = get_logger(__name__)
 
-async def handle_new_balance(message: types.Message):
+
+async def handle_new_balance(message: types.Message, state: FSMContext):
     """Обработка ввода нового баланса пользователем."""
     try:
         # пытаемся преобразовать текст в float
@@ -29,9 +30,11 @@ async def handle_new_balance(message: types.Message):
                 conn.close()
 
         await message.answer(f"✅ Новый баланс установлен: {new_balance:.2f} USDT")
-
+        await state.clear()
+        
     except ValueError:
         await message.answer("⚠ Пожалуйста, введите корректное число (например, 1500.25)")
     except Exception as e:
         logger.exception(f"Ошибка при установке нового баланса: {e}")
         await message.answer("⚠ Ошибка при сохранении нового баланса.")
+        await state.clear()

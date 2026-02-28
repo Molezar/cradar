@@ -1,5 +1,6 @@
 #admin/callbacks.py
 from aiogram import types
+from aiogram import Dispatcher
 from logger import get_logger
 from database.database import init_db
 from config import Config
@@ -115,8 +116,8 @@ async def handle_admin_callbacks(callback: types.CallbackQuery):
             await callback.answer()
             await callback.message.answer("💰 Введите новый баланс демо-счёта (только цифры):")
             
-            # Ставим FSM-состояние
-            state: FSMContext = callback._bot.get_current().current_state(chat=callback.message.chat.id)
+            dp: Dispatcher = Dispatcher.get_current()
+            state: FSMContext = dp.current_state(chat=callback.message.chat.id)
             await state.set_state(BalanceStates.awaiting_new_balance)
         
         elif data == "admin_main":

@@ -15,11 +15,11 @@ async def handle_admin_messages(message: types.Message, state: FSMContext):
             await message.reply("🚫 Доступ запрещен")
             return
 
-        user_data = await state.get_data()
+        current_state = await state.get_state()
 
         # --- проверяем состояние ---
-        if user_data.get("awaiting_new_balance"):
-            await handle_new_balance(message)
+        if current_state == BalanceStates.awaiting_new_balance.state:
+            await handle_new_balance(message, state)
 
     except Exception as e:
         logger.exception(f"Admin message handler error: {e}")
