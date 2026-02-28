@@ -1,70 +1,40 @@
-import time
+# admin/signal/callbacks.py
 from aiogram import types
-from logger import get_logger
 from database.database import get_db
-from .keyboards import get_signal_kb
-from services.strategies import AggressiveStrategy
+from logger import get_logger
 from aiogram.fsm.context import FSMContext
 
 logger = get_logger(__name__)
 
-DEFAULT_LEVERAGE = 5
-RISK_PER_TRADE = 0.02
-    
-
-def get_demo_balance():
-    conn = None
+async def handle_new_balance(message: types.Message, state: FSMContext):
+    """Обработка ввода нового баланса пользователем."""
     try:
-        conn = get_db()
-        row = conn.execute("SELECT balance FROM demo_account WHERE id=1").fetchone()
-        return row["balance"] if row else 1000
-    finally:
-        if conn:
-            conn.close()
+        # пытаемся преобразовать текст в float
+        new_balance = float(message.text)
+        if new_balance <= 0:
+            await message.answer("⚠ Баланс должен быть положительным числом.")
+            return
 
+        # сохраняем в БД
+        conn = None
+        try:
+            conn = get_db()
+            conn.execute("""
+                UPDATE demo_account
+                SET balance = ?, updated_at = strftime('%s','now')
+                WHERE id = 1
+            """, (new_balance,))
+            conn.commit()
+        finally:
+            if conn:
+                conn.close()
 
-def has_open_trade():
-    conn = None
-    try:
-        conn = get_db()
-        row = conn.execute(
-            "SELECT 1 FROM trade_signals WHERE status='OPEN' LIMIT 1"
-        ).fetchone()
-        return row is not None
-    finally:
-        if conn:
-            conn.close()
-
-
-def calculate_position_size(balance, entry, stop):
-    stop_distance = abs(entry - stop)
-    if stop_distance == 0:
-        return 0
-    risk_amount = balance * RISK_PER_TRADE
-    return risk_amount / stop_distance
-
-
-def save_signal(direction, entry, stop, take, leverage, position_size):
-    conn = None
-    try:
-        conn = get_db()
-        conn.execute("""
-            INSERT INTO trade_signals 
-            (created_at, direction, entry, stop, take, leverage, position_size)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            int(time.time()), direction, entry, stop, take, leverage, position_size
-        ))
-        conn.commit()
-    finally:
-        if conn:
-            conn.close()
-
-
-async def handle_edit_balance(callback: types.CallbackQuery, state: FSMContext):
-    """Отправляем сообщение с просьбой ввести новый баланс"""
-    await callback.answer()
-    await callback.message.answer("💰 Введите новый баланс демо-счёта (только цифры):")
-    # ✅ используем State напрямую
-    from admin.callbacks import BalanceStates
-    await state.set_state(BalanceStates.awaiting_new_balance)
+        await message.answer(f"✅ Новый баланс установлен: {new_balance:.2f} USDT")
+        await state.clear()  # ✅ очищаем FSM после ввода
+        
+    except ValueError:
+        await message.answer("⚠ Пожалуйста, введите корректное число (например, 1500.25)")
+    except Exception as e:
+        logger.exception(f"Ошибка при установке нового баланса: {e}")
+        await message.answer("⚠ Ошибка при сохранении нового баланса.")
+        await state.clear()
