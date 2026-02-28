@@ -3,7 +3,11 @@ from aiogram import types
 from aiogram.fsm.context import FSMContext
 from logger import get_logger
 from config import Config
-from admin.signal.messages import handle_new_balance  # метод из signal/messages.py
+from admin.signal.messages import handle_new_balance
+from aiogram.fsm.state import StatesGroup, State
+
+class BalanceStates(StatesGroup):
+    awaiting_new_balance = State()
 
 logger = get_logger(__name__)
 ADMIN_ID = Config.ADMIN_ID
