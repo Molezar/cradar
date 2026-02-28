@@ -1,4 +1,3 @@
-#admin/callbacks.py
 from aiogram import types
 from aiogram import Dispatcher
 from logger import get_logger
@@ -35,7 +34,8 @@ logger = get_logger(__name__)
 ADMIN_ID = Config.ADMIN_ID
 
 
-async def handle_admin_callbacks(callback: types.CallbackQuery):
+async def handle_admin_callbacks(callback: types.CallbackQuery, state: FSMContext):
+    """Главный callback для админ-кнопок с FSMContext переданным сверху"""
     await callback.answer()
 
     try:
@@ -77,9 +77,7 @@ async def handle_admin_callbacks(callback: types.CallbackQuery):
                 if db_path.exists():
                     db_path.unlink()
         
-                # --- Удаляем migration log в зависимости от ENV ---
                 env = Config.ENV.lower()
-        
                 if env == "prod":
                     log_path = Path("/data/prod_applied_migrations.txt")
                 elif env == "stag":
@@ -116,8 +114,7 @@ async def handle_admin_callbacks(callback: types.CallbackQuery):
             await callback.answer()
             await callback.message.answer("💰 Введите новый баланс демо-счёта (только цифры):")
             
-            dp: Dispatcher = Dispatcher.get_current()
-            state: FSMContext = dp.current_state(chat=callback.message.chat.id)
+            # ✅ FSMContext уже передан в callback, используем его напрямую
             await state.set_state(BalanceStates.awaiting_new_balance)
         
         elif data == "admin_main":
@@ -131,5 +128,5 @@ async def handle_admin_callbacks(callback: types.CallbackQuery):
         await callback.message.edit_text("⚠️ Ошибка", reply_markup=get_admin_to_main_bt())
 
 
-def setup_admin_callbacks(dp):
+def setup_admin_callbacks(dp: Dispatcher):
     dp.callback_query.register(handle_admin_callbacks)

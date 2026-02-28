@@ -22,7 +22,8 @@ async def handle_admin_messages(message: types.Message, state: FSMContext):
         current_state = await state.get_state()
 
         # --- проверяем состояние ---
-        if current_state == BalanceStates.awaiting_new_balance.state:
+        if current_state == BalanceStates.awaiting_new_balance.state:  
+            # ✅ здесь корректно сравниваем с State.state
             await handle_new_balance(message, state)
 
     except Exception as e:
