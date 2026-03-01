@@ -2,7 +2,7 @@
 from aiogram import types
 from aiogram import Dispatcher
 from logger import get_logger
-from database.database import init_db
+from database.database import init_db, get_db
 from config import Config
 from pathlib import Path
 from migrate import run_migrations
