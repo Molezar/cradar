@@ -1,3 +1,4 @@
+# admin/callbacks.py
 from aiogram import types
 from aiogram import Dispatcher
 from logger import get_logger
@@ -18,11 +19,14 @@ from admin.main.callbacks import (
     handle_download_migrations_log,
     handle_view_volume
 )
+
 from admin.signal.callbacks import (
     handle_signal,
     handle_cancel_trade,
-    handle_refresh_signal
+    handle_refresh_signal,
+    show_demo_balance
 )
+
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from admin.signal.messages import handle_new_balance
@@ -110,6 +114,8 @@ async def handle_admin_callbacks(callback: types.CallbackQuery, state: FSMContex
         elif data == "signal:refresh":
             await handle_refresh_signal(callback)
             
+        elif data == "admin:show_balance":
+            await show_demo_balance(callback)
         elif data == "admin:edit_balance":
             await callback.answer()
             await callback.message.answer("💰 Введите новый баланс демо-счёта (только цифры):")

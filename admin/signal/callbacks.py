@@ -7,6 +7,8 @@ from .keyboards import get_signal_kb
 from services.strategies import AggressiveStrategy
 from aiogram.fsm.context import FSMContext
 from aiogram import Dispatcher
+from utility import calculate_system_stats
+from admin.keyboards import get_admin_to_main_bt
 
 logger = get_logger(__name__)
 
@@ -184,3 +186,32 @@ async def handle_edit_balance(callback: types.CallbackQuery):
     
     state: FSMContext = Dispatcher.get_current().current_state(chat=callback.message.chat.id)
     await state.set_state("awaiting_new_balance")
+
+async def show_demo_balance(callback: types.CallbackQuery):
+    await callback.answer()
+
+    try:
+        stats = calculate_system_stats()
+
+        text = (
+            "📊 <b>Системная статистика</b>\n\n"
+
+            f"💰 <b>Баланс:</b> {stats['balance']:.2f} USDT\n"
+            f"📈 <b>Total PnL:</b> {stats['total_pnl']:.2f} USDT\n\n"
+
+            f"📊 <b>Сделки:</b>\n"
+            f"• Всего: {stats['total_trades']}\n"
+            f"• TP: {stats['wins']}\n"
+            f"• SL: {stats['losses']}\n"
+            f"• Winrate: {stats['winrate']}%\n"
+        )
+
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_admin_to_main_bt(),
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+        logger.exception(f"Show balance error: {e}")
+        await callback.message.answer("❌ Ошибка получения статистики")
