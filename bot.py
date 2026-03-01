@@ -5,9 +5,7 @@ import aiohttp
 import json
 
 from database.database import get_db
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import WebAppInfo, ReplyKeyboardMarkup, KeyboardButton
+from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
 from config import Config
@@ -38,31 +36,6 @@ setup_admin(dp)
 
 subscribers = set()
 seen_txids = set()  # защита от дублей
-
-
-# ==============================================
-# Start command
-# ==============================================
-@dp.message()
-async def debug_all(message: types.Message):
-    logger.info(f"ANY MESSAGE RECEIVED: {message.text}")
-    
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    subscribers.add(message.chat.id)
-    logger.info(f"User {message.chat.id} started the bot")
-
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Open MiniApp", web_app=WebAppInfo(url=WEBAPP_URL))]
-        ],
-        resize_keyboard=True
-    )
-
-    await message.answer(
-        "🧠 <b>Crypto Radar activated</b>\nWhale flow alerts enabled 👇",
-        reply_markup=keyboard
-    )
 
 
 # ==============================================
