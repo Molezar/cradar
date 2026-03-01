@@ -19,12 +19,13 @@ from admin.main.callbacks import (
     handle_download_migrations_log,
     handle_view_volume
 )
-
 from admin.signal.callbacks import (
     handle_signal,
     handle_cancel_trade,
     handle_refresh_signal,
-    show_demo_balance
+    show_demo_balance,
+    confirm_reset_stats,
+    reset_stats
 )
 
 from aiogram.fsm.state import StatesGroup, State
@@ -113,6 +114,12 @@ async def handle_admin_callbacks(callback: types.CallbackQuery, state: FSMContex
             await handle_cancel_trade(callback)
         elif data == "signal:refresh":
             await handle_refresh_signal(callback)
+            
+        elif data == "admin:reset_stats_confirm":
+            await confirm_reset_stats(callback)
+        
+        elif data == "admin:reset_stats":
+            await reset_stats(callback)
             
         elif data == "admin:show_balance":
             await show_demo_balance(callback)

@@ -3,12 +3,16 @@ import time
 from aiogram import types
 from logger import get_logger
 from database.database import get_db
-from .keyboards import get_signal_kb
 from services.strategies import AggressiveStrategy
 from aiogram.fsm.context import FSMContext
 from aiogram import Dispatcher
 from utils import calculate_system_stats
 from admin.keyboards import get_admin_to_main_bt
+from .keyboards import (
+    get_signal_kb,
+    get_reset_stats_kb,
+    get_reset_stats_confirm_kb
+)
 
 logger = get_logger(__name__)
 
@@ -208,10 +212,52 @@ async def show_demo_balance(callback: types.CallbackQuery):
 
         await callback.message.edit_text(
             text,
-            reply_markup=get_admin_to_main_bt(),
+            reply_markup=get_reset_stats_kb(),
             parse_mode="HTML"
         )
 
     except Exception as e:
         logger.exception(f"Show balance error: {e}")
         await callback.message.answer("❌ Ошибка получения статистики")
+        
+async def confirm_reset_stats(callback: types.CallbackQuery):
+    await callback.answer()
+
+    await callback.message.edit_text(
+        "⚠️ Вы уверены, что хотите полностью обнулить статистику?\n\n"
+        "Будут удалены все сделки и сброшен баланс.",
+        reply_markup=get_reset_stats_confirm_kb()
+    )
+    
+async def reset_stats(callback: types.CallbackQuery):
+    await callback.answer()
+
+    conn = None
+    try:
+        conn = get_db()
+
+        # Удаляем все сделки
+        conn.execute("DELETE FROM trade_signals")
+
+        # Сбрасываем баланс к 1000
+        conn.execute("""
+            UPDATE demo_account
+            SET balance = 1000,
+                updated_at = strftime('%s','now')
+            WHERE id = 1
+        """)
+
+        conn.commit()
+
+        await callback.message.answer("✅ Статистика успешно обнулена.")
+
+        # Обновляем экран статистики
+        await show_demo_balance(callback)
+
+    except Exception as e:
+        logger.exception(f"Reset stats error: {e}")
+        await callback.message.answer("❌ Ошибка при обнулении статистики")
+
+    finally:
+        if conn:
+            conn.close()
