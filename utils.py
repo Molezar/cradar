@@ -1,4 +1,6 @@
 #utils.py
+from database.database import get_db
+
 def calculate_system_stats():
     """
     Рассчитывает общую статистику по системе (без user_id)
