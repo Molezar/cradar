@@ -17,7 +17,7 @@ from .keyboards import (
 logger = get_logger(__name__)
 
 DEFAULT_LEVERAGE = 5
-RISK_PER_TRADE = 0.02
+RISK_PER_TRADE = 0.03
     
 
 def get_demo_balance():
@@ -93,22 +93,10 @@ async def handle_signal(callback: types.CallbackQuery):
         
         direction, entry, stop, take, leverage = result
 
-        # --- мини-лог для проверки онлайн данных ---
-        log_msg = (
-            f"🔍 <b>Debug Signal Check</b>\n"
-            f"Direction: {direction}\n"
-            f"Entry: {entry}\n"
-            f"Stop: {stop}\n"
-            f"Take: {take}\n"
-            f"Leverage: {leverage}x"
-        )
-        await callback.message.answer(log_msg, parse_mode="HTML")
-
         balance = get_demo_balance()
         position_size = calculate_position_size(balance, entry, stop)
         save_signal(direction, entry, stop, take, leverage, position_size)
 
-        # --- основной текст сигнала ---
         text = (
             f"📊 <b>Баланс:</b> {balance:.2f} USDT\n\n"
             f"🎯 <b>Рекомендация:</b> {direction}\n"
@@ -176,7 +164,6 @@ async def handle_cancel_trade(
         if conn:
             conn.close()
 
-    # 🔥 если это refresh — запускаем новый сигнал
     if refresh:
         await handle_signal(callback)
 

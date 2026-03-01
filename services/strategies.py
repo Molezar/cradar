@@ -48,7 +48,7 @@ class BaseStrategy:
 
 class AggressiveStrategy(BaseStrategy):
     def __init__(self):
-        super().__init__(max_leverage=5, min_threshold=0.02)
+        super().__init__(max_leverage=10, min_threshold=0.015)
 
 
 class ConservativeStrategy(BaseStrategy):
