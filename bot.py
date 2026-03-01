@@ -31,12 +31,11 @@ bot = Bot(
     BOT_TOKEN,
     default=DefaultBotProperties(parse_mode="HTML")
 )
-dp = Dispatcher()
-setup_admin(dp, subscribers)
-
 subscribers = set()
 seen_txids = set()  # защита от дублей
 
+dp = Dispatcher()
+setup_admin(dp, subscribers)
 
 # ==============================================
 # SSE Listener
