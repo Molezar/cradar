@@ -1,4 +1,4 @@
-#onchain.py
+# onchain.py
 import time
 import json
 import asyncio
@@ -97,7 +97,9 @@ def get_output_map(tx):
 # Flow classification
 # ==============================================
 def classify_flow(inputs, outputs, cursor):
-
+    """
+    Возвращает список потоков (from_cluster, to_cluster, flow_type, btc)
+    """
     in_clusters = {}
     out_clusters = {}
 
@@ -113,40 +115,20 @@ def classify_flow(inputs, outputs, cursor):
         if cid:
             out_clusters[cid] = out_clusters.get(cid, 0) + btc
 
-    all_clusters = set(in_clusters.keys()) | set(out_clusters.keys())
+    flows = []
 
-    best_cluster = None
-    best_net = 0
-
-    for cid in all_clusters:
+    for cid in set(in_clusters.keys()) | set(out_clusters.keys()):
         in_vol = in_clusters.get(cid, 0)
         out_vol = out_clusters.get(cid, 0)
+        net = in_vol - out_vol
 
-        net = out_vol - in_vol  # положительное = депозит
+        if net > 0:
+            flows.append((None, cid, "DEPOSIT", net))
+        elif net < 0:
+            flows.append((cid, None, "WITHDRAW", -net))
 
-        if abs(net) > abs(best_net):
-            best_net = net
-            best_cluster = cid
+    return flows
 
-    if not best_cluster:
-        return None, None, "UNKNOWN", 0
-
-    in_vol = in_clusters.get(best_cluster, 0)
-    out_vol = out_clusters.get(best_cluster, 0)
-
-    # INTERNAL если почти равны (5%)
-    if max(in_vol, out_vol) > 0 and abs(in_vol - out_vol) / max(in_vol, out_vol) < 0.05:
-        flow_type = "INTERNAL"
-        flow_btc = min(in_vol, out_vol)
-        return best_cluster, best_cluster, flow_type, flow_btc
-
-    if best_net > 0:
-        # деньги пришли в кластер
-        return None, best_cluster, "DEPOSIT", abs(best_net)
-
-    else:
-        # деньги ушли из кластера
-        return best_cluster, None, "WITHDRAW", abs(best_net)
 
 # ==============================================
 # WebSocket Worker
@@ -202,7 +184,7 @@ async def mempool_ws_worker():
                         if total < MIN_WHALE_BTC:
                             continue
 
-                        # --- DB WRITE BLOCK (очень короткий) ---
+                        # --- DB WRITE BLOCK ---
                         conn = None
                         try:
                             conn = get_db()
@@ -216,42 +198,38 @@ async def mempool_ws_worker():
                                 else:
                                     update_address_seen(addr, c)
 
-                            from_c, to_c, flow_type, flow_btc = classify_flow(
-                                inputs, outputs, c
-                            )
+                            flows = classify_flow(inputs, outputs, c)
 
-                            if flow_type in ("UNKNOWN", "INTERNAL"):
-                                continue
-
-                            c.execute("""
-                                INSERT OR IGNORE INTO whale_tx(txid, btc, time)
-                                VALUES (?,?,?)
-                            """, (txid, total, now))
-
-                            c.execute("""
-                                INSERT OR REPLACE INTO whale_classification
-                                (txid, btc, time, from_cluster, to_cluster, flow_type)
-                                VALUES (?,?,?,?,?,?)
-                            """, (txid, flow_btc, now, from_c, to_c, flow_type))
-
-                            if flow_btc >= ALERT_WHALE_BTC:
+                            for from_c, to_c, flow_type, flow_btc in flows:
                                 c.execute("""
-                                    INSERT OR REPLACE INTO alert_tx
-                                    (txid, btc, time, flow_type, from_cluster, to_cluster)
+                                    INSERT OR IGNORE INTO whale_tx(txid, btc, time)
+                                    VALUES (?,?,?)
+                                """, (txid, total, now))
+
+                                c.execute("""
+                                    INSERT OR REPLACE INTO whale_classification
+                                    (txid, btc, time, from_cluster, to_cluster, flow_type)
                                     VALUES (?,?,?,?,?,?)
-                                """, (txid, flow_btc, now, flow_type, from_c, to_c))
+                                """, (txid, flow_btc, now, from_c, to_c, flow_type))
 
-                                event = {
-                                    "txid": txid,
-                                    "btc": round(flow_btc, 4),
-                                    "flow": flow_type,
-                                    "from_cluster": from_c,
-                                    "to_cluster": to_c,
-                                    "time": now
-                                }
+                                if flow_btc >= ALERT_WHALE_BTC:
+                                    c.execute("""
+                                        INSERT OR REPLACE INTO alert_tx
+                                        (txid, btc, time, flow_type, from_cluster, to_cluster)
+                                        VALUES (?,?,?,?,?,?)
+                                    """, (txid, flow_btc, now, flow_type, from_c, to_c))
 
-                                logger.info(f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}")
-                                _events.put(event)
+                                    event = {
+                                        "txid": txid,
+                                        "btc": round(flow_btc, 4),
+                                        "flow": flow_type,
+                                        "from_cluster": from_c,
+                                        "to_cluster": to_c,
+                                        "time": now
+                                    }
+
+                                    logger.info(f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}")
+                                    _events.put(event)
 
                             conn.commit()
 
