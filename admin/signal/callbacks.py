@@ -7,7 +7,7 @@ from .keyboards import get_signal_kb
 from services.strategies import AggressiveStrategy
 from aiogram.fsm.context import FSMContext
 from aiogram import Dispatcher
-from utility import calculate_system_stats
+from utils import calculate_system_stats
 from admin.keyboards import get_admin_to_main_bt
 
 logger = get_logger(__name__)
