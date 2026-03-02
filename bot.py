@@ -146,7 +146,7 @@ async def whale_listener():
 # ==============================================
 # Trade Monitor
 # ==============================================
-  async def trade_monitor():
+async def trade_monitor():
     await asyncio.sleep(5)
     logger.info("Trade monitor starting...")
     logger.info(f"get_db in globals: {'get_db' in globals()}")
@@ -297,7 +297,6 @@ async def whale_listener():
                 logger.error(f"AUTO signal error: {e}")
 
         await asyncio.sleep(5)
-
 # ==============================================
 # Hearbeat
 # ==============================================
