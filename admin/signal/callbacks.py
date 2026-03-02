@@ -202,9 +202,60 @@ async def handle_signal(callback: types.CallbackQuery):
     await callback.answer()
     try:
         if has_open_trade():
-            await callback.message.answer(
-                "⚠️ Уже есть открытая сделка.\nДождитесь её закрытия (TP или SL)."
-            )
+            conn = None
+            try:
+                conn = get_db()
+        
+                row = conn.execute("""
+                    SELECT *
+                    FROM trade_signals
+                    WHERE status='OPEN'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                """).fetchone()
+        
+                if row:
+                    price = await get_current_price()
+        
+                    direction = row["direction"]
+                    entry = row["entry"]
+                    stop = row["stop"]
+                    take = row["take"]
+                    leverage = row["leverage"]
+                    position_size = row["position_size"]
+        
+                    # текущий PnL
+                    if direction == "LONG":
+                        pnl = (price - entry) * position_size
+                    else:
+                        pnl = (entry - price) * position_size
+        
+                    text = (
+                        "⚠️ <b>Уже есть открытая сделка</b>\n\n"
+                        f"📍 Направление: {direction}\n"
+                        f"📥 Entry: {entry}\n"
+                        f"🛑 Stop: {stop}\n"
+                        f"🎯 Take: {take}\n"
+                        f"📈 Плечо: {leverage}x\n"
+                        f"💰 Размер: {position_size:.6f} BTC\n\n"
+                        f"💲 Текущая цена: {price}\n"
+                        f"📊 Текущий PnL: {pnl:+.2f} USDT"
+                    )
+        
+                    await callback.message.answer(
+                        text,
+                        parse_mode="HTML"
+                    )
+        
+                else:
+                    await callback.message.answer(
+                        "⚠️ Уже есть открытая сделка."
+                    )
+        
+            finally:
+                if conn:
+                    conn.close()
+        
             return
         
         strategy = AggressiveStrategy()
