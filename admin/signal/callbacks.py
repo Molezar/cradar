@@ -6,6 +6,7 @@ from database.database import get_db
 from services.strategies import AggressiveStrategy
 from aiogram.fsm.context import FSMContext
 from aiogram import Dispatcher
+from services.price import get_current_price
 from utils import calculate_system_stats
 from admin.keyboards import get_admin_to_main_bt
 from .keyboards import (
@@ -18,8 +19,135 @@ logger = get_logger(__name__)
 
 DEFAULT_LEVERAGE = 5
 RISK_PER_TRADE = 0.03
-    
 
+def get_auto_mode():
+    conn = None
+    try:
+        conn = get_db()
+
+        row = conn.execute(
+            "SELECT auto_mode FROM bot_settings WHERE id=1"
+        ).fetchone()
+
+        return bool(row["auto_mode"]) if row else False
+
+    finally:
+        if conn:
+            conn.close()    
+
+def set_auto_mode(value: bool):
+    conn = None
+    try:
+        conn = get_db()
+
+        conn.execute(
+            "UPDATE bot_settings SET auto_mode=? WHERE id=1",
+            (1 if value else 0,)
+        )
+
+        conn.commit()
+
+    finally:
+        if conn:
+            conn.close()
+
+async def auto_menu(callback: types.CallbackQuery):
+    await callback.answer()
+    auto = get_auto_mode()
+
+    text = "🤖 <b>Авто режим</b>\n\n"
+    text += "🟢 Включен" if auto else "🔴 Выключен"
+
+    from admin.keyboards import get_auto_mode_kb
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_auto_mode_kb(auto),
+        parse_mode="HTML"
+    )
+
+async def auto_start(callback: types.CallbackQuery):
+    await callback.answer()
+
+    set_auto_mode(True)
+
+    await callback.message.answer("🚀 Авто режим включен")
+
+    # если нет открытой сделки — запускаем первую
+    if not has_open_trade():
+        await handle_signal(callback)
+
+async def auto_stop(callback: types.CallbackQuery):
+    await callback.answer()
+
+    set_auto_mode(False)
+
+    pnl = await close_open_trade_by_market()
+
+    if pnl is None:
+        await callback.message.answer(
+            "⛔ Авто режим выключен.\nОткрытых сделок нет."
+        )
+    else:
+        await callback.message.answer(
+            f"⛔ Авто режим выключен.\n"
+            f"Сделка закрыта по рынку.\n"
+            f"PnL: {pnl:+.2f} USDT"
+        )
+        
+async def close_open_trade_by_market():
+    """
+    Закрывает последнюю открытую сделку по текущей цене.
+    Возвращает pnl или None если сделки нет.
+    """
+
+    conn = None
+    try:
+        conn = get_db()
+
+        row = conn.execute("""
+            SELECT * FROM trade_signals
+            WHERE status='OPEN'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """).fetchone()
+
+        if not row:
+            return None
+
+        price = await get_current_price()
+
+        direction = row["direction"]
+        entry = row["entry"]
+        position_size = row["position_size"]
+        trade_id = row["id"]
+
+        pnl = (
+            (price - entry) * position_size
+            if direction == "LONG"
+            else (entry - price) * position_size
+        )
+
+        conn.execute("""
+            UPDATE trade_signals
+            SET status='CANCELLED', result=?
+            WHERE id=?
+        """, (pnl, trade_id))
+
+        conn.execute("""
+            UPDATE demo_account
+            SET balance = balance + ?,
+                updated_at=strftime('%s','now')
+            WHERE id=1
+        """, (pnl,))
+
+        conn.commit()
+
+        return pnl
+
+    finally:
+        if conn:
+            conn.close()
+            
 def get_demo_balance():
     """Возвращает баланс демо-счёта."""
     conn = None
@@ -30,7 +158,6 @@ def get_demo_balance():
     finally:
         if conn:
             conn.close()
-
 
 def has_open_trade():
     """Проверяет наличие открытой сделки."""
@@ -45,7 +172,6 @@ def has_open_trade():
         if conn:
             conn.close()
 
-
 def calculate_position_size(balance, entry, stop):
     """Рассчитывает размер позиции по правилу риска."""
     stop_distance = abs(entry - stop)
@@ -53,7 +179,6 @@ def calculate_position_size(balance, entry, stop):
         return 0
     risk_amount = balance * RISK_PER_TRADE
     return risk_amount / stop_distance
-
 
 def save_signal(direction, entry, stop, take, leverage, position_size):
     """Сохраняет сигнал в БД."""
@@ -71,7 +196,6 @@ def save_signal(direction, entry, stop, take, leverage, position_size):
     finally:
         if conn:
             conn.close()
-
 
 async def handle_signal(callback: types.CallbackQuery):
     """Обработка сигнала через кнопку в Telegram."""

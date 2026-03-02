@@ -23,6 +23,9 @@ from admin.signal.callbacks import (
     handle_signal,
     handle_cancel_trade,
     handle_refresh_signal,
+    auto_menu,
+    auto_start,
+    auto_stop,
     show_demo_balance,
     confirm_reset_stats,
     reset_stats
@@ -114,6 +117,15 @@ async def handle_admin_callbacks(callback: types.CallbackQuery, state: FSMContex
             await handle_cancel_trade(callback)
         elif data == "signal:refresh":
             await handle_refresh_signal(callback)
+        
+        elif data == "auto:menu":
+            await auto_menu(callback)
+        
+        elif data == "auto:start":
+            await auto_start(callback)
+        
+        elif data == "auto:stop":
+            await auto_stop(callback)
             
         elif data == "admin:reset_stats_confirm":
             await confirm_reset_stats(callback)

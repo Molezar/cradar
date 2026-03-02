@@ -14,6 +14,8 @@ from admin import setup_admin
 from utils import calculate_system_stats
 from services.price import get_current_price
 from services.api_config import API, ssl_context
+from admin.signal.callbacks import get_auto_mode
+from admin.signal.callbacks import handle_signal
 
 logger = get_logger(__name__)
 
@@ -144,19 +146,21 @@ async def whale_listener():
 # ==============================================
 # Trade Monitor
 # ==============================================
-async def trade_monitor():
+  async def trade_monitor():
     await asyncio.sleep(5)
     logger.info("Trade monitor starting...")
     logger.info(f"get_db in globals: {'get_db' in globals()}")
 
     while True:
+        closed_any_trade = False  # 🔥 флаг закрытия сделки
+
         try:
             price = await get_current_price()
             if price <= 0:
                 await asyncio.sleep(5)
                 continue
 
-            # --- 1️⃣ Получаем открытые сделки (READ BLOCK) ---
+            # --- 1️⃣ READ BLOCK ---
             conn = None
             try:
                 conn = get_db()
@@ -167,7 +171,7 @@ async def trade_monitor():
                 if conn:
                     conn.close()
 
-            # --- 2️⃣ Обрабатываем каждую сделку отдельно ---
+            # --- 2️⃣ Обрабатываем сделки ---
             for trade in trades:
                 direction = trade["direction"]
                 entry = trade["entry"]
@@ -187,42 +191,50 @@ async def trade_monitor():
                         exit_price = stop
                         status = "SL"
 
-                if not exit_price:
+                # если условия не выполнены
+                if exit_price is None:
                     continue
 
                 pnl = (exit_price - entry) * position_size
 
-                # --- 3️⃣ WRITE BLOCK (очень короткий) ---
+                # --- 3️⃣ WRITE BLOCK ---
                 conn = None
                 try:
                     conn = get_db()
                     c = conn.cursor()
 
-                    # обновляем сделку
+                    # защита от двойного закрытия
                     c.execute("""
                         UPDATE trade_signals
                         SET status=?, result=?
-                        WHERE id=?
+                        WHERE id=? AND status='OPEN'
                     """, (status, pnl, trade_id))
 
-                    # обновляем баланс
-                    c.execute("SELECT balance FROM demo_account WHERE id=1")
-                    balance = c.fetchone()["balance"]
-                    new_balance = balance + pnl
+                    # если сделка уже закрыта другой корутиной
+                    if c.rowcount == 0:
+                        conn.rollback()
+                        continue
 
+                    # безопасное обновление баланса
                     c.execute("""
                         UPDATE demo_account
-                        SET balance=?, updated_at=?
+                        SET balance = balance + ?,
+                            updated_at=?
                         WHERE id=1
-                    """, (new_balance, int(time.time())))
+                    """, (pnl, int(time.time())))
+
+                    # получаем новый баланс
+                    c.execute("SELECT balance FROM demo_account WHERE id=1")
+                    new_balance = c.fetchone()["balance"]
 
                     conn.commit()
+                    closed_any_trade = True
 
                 finally:
                     if conn:
                         conn.close()
 
-                # --- 4️⃣ Только теперь отправляем сообщения ---
+                # --- 4️⃣ Отправка сообщений ---
                 msg = (
                     f"✅ <b>Сделка закрыта</b>\n"
                     f"Направление: {direction}\n"
@@ -240,7 +252,7 @@ async def trade_monitor():
                         logger.error(f"Send error for {cid}: {e}")
                         subscribers.discard(cid)
 
-                # --- 5️⃣ Статистика (отдельный DB блок внутри функции) ---
+                # --- 5️⃣ Статистика ---
                 stats = calculate_system_stats()
 
                 stats_msg = (
@@ -263,8 +275,29 @@ async def trade_monitor():
         except Exception as e:
             logger.error(f"Trade monitor error: {e}")
 
+        # --- 6️⃣ AUTO режим только если реально закрылась сделка ---
+        if get_auto_mode() and closed_any_trade and subscribers:
+
+            class FakeCallback:
+                def __init__(self, bot, cid):
+                    self.message = type("obj", (), {"chat": type("obj", (), {"id": cid})})
+                    self.from_user = type("obj", (), {"id": cid})
+                    self.bot = bot
+
+                async def answer(self):
+                    pass
+
+            # создаём один новый сигнал, а не по количеству подписчиков
+            cid = next(iter(subscribers))
+
+            try:
+                fake = FakeCallback(bot, cid)
+                await handle_signal(fake)
+            except Exception as e:
+                logger.error(f"AUTO signal error: {e}")
+
         await asyncio.sleep(5)
-        
+
 # ==============================================
 # Hearbeat
 # ==============================================
