@@ -203,14 +203,60 @@ async def handle_signal(callback: types.CallbackQuery):
     try:
         result = await generate_and_save_signal()
 
+        # Проверяем, есть ли уже открытая сделка
         if result == "already_open":
-            await callback.message.answer("⚠️ Уже есть открытая сделка.")
-            return
+            # Получаем данные текущей открытой сделки из БД
+            conn = None
+            try:
+                conn = get_db()
+                trade = conn.execute("""
+                    SELECT direction, entry, stop, take, leverage, 
+                           position_size, created_at
+                    FROM trade_signals 
+                    WHERE status = 'OPEN' 
+                    ORDER BY created_at DESC 
+                    LIMIT 1
+                """).fetchone()
+                
+                if trade:
+                    # Получаем текущий баланс
+                    balance = get_demo_balance()
+                    
+                    # Формируем текст с информацией о текущей открытой сделке
+                    text = (
+                        f"⚠️ <b>Уже есть открытая сделка</b>\n\n"
+                        f"📊 <b>Баланс:</b> {balance:.2f} USDT\n\n"
+                        f"🎯 <b>Рекомендация:</b> {trade['direction']}\n"
+                        f"📍 Entry: {trade['entry']}\n"
+                        f"🛑 Stop: {trade['stop']}\n"
+                        f"🎯 Take: {trade['take']}\n"
+                        f"📈 Плечо: {trade['leverage']}x\n"
+                        f"💰 Размер позиции: {trade['position_size']:.6f} BTC\n"
+                        f"⚠ Риск: {RISK_PER_TRADE*100:.0f}%"
+                    )
+                    
+                    await callback.message.edit_text(
+                        text,
+                        reply_markup=get_signal_kb(),
+                        parse_mode="HTML"
+                    )
+                else:
+                    # Если по какой-то причине сделки нет в БД, но функция вернула already_open
+                    await callback.message.answer(
+                        "⚠️ Уже есть открытая сделка.",
+                        reply_markup=get_signal_kb()
+                    )
+                return
+                
+            finally:
+                if conn:
+                    conn.close()
 
         if result is None:
             await callback.message.answer("⚖️ Сейчас нет чёткого сигнала. Рынок во флэте.")
             return
 
+        # Если дошли сюда - значит result это словарь с данными нового сигнала
         text = (
             f"📊 <b>Баланс:</b> {result['balance']:.2f} USDT\n\n"
             f"🎯 <b>Рекомендация:</b> {result['direction']}\n"
