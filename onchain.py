@@ -72,6 +72,7 @@ def create_behavioral_cluster(address, cursor):
 # ==============================================
 # Parsing
 # ==============================================
+
 def get_input_map(tx):
     m = {}
     for vin in tx.get("vin", []):
@@ -93,9 +94,38 @@ def get_output_map(tx):
     return m
 
 
+def store_tx_io(txid, inputs_map, outputs_map):
+    conn = get_db()
+    c = conn.cursor()
+
+    input_rows = [
+        (txid, addr, btc)
+        for addr, btc in inputs_map.items()
+    ]
+
+    output_rows = [
+        (txid, addr, btc)
+        for addr, btc in outputs_map.items()
+    ]
+
+    c.executemany("""
+        INSERT OR IGNORE INTO tx_inputs (txid, address, btc)
+        VALUES (?, ?, ?)
+    """, input_rows)
+
+    c.executemany("""
+        INSERT OR IGNORE INTO tx_outputs (txid, address, btc)
+        VALUES (?, ?, ?)
+    """, output_rows)
+
+    conn.commit()
+    conn.close()
+
+
 # ==============================================
 # Flow classification
 # ==============================================
+
 def classify_flow(inputs, outputs, cursor):
     """
     Возвращает список потоков (from_cluster, to_cluster, flow_type, btc)
@@ -103,13 +133,11 @@ def classify_flow(inputs, outputs, cursor):
     in_clusters = {}
     out_clusters = {}
 
-    # собираем входные объёмы
     for addr, btc in inputs.items():
         cid, _ = resolve_cluster(addr, cursor)
         if cid:
             in_clusters[cid] = in_clusters.get(cid, 0) + btc
 
-    # собираем выходные объёмы
     for addr, btc in outputs.items():
         cid, _ = resolve_cluster(addr, cursor)
         if cid:
@@ -133,6 +161,7 @@ def classify_flow(inputs, outputs, cursor):
 # ==============================================
 # WebSocket Worker
 # ==============================================
+
 async def mempool_ws_worker():
 
     while True:
@@ -177,6 +206,10 @@ async def mempool_ws_worker():
 
                         _seen_txids.add(txid)
 
+                        # защита от роста памяти
+                        if len(_seen_txids) > 200_000:
+                            _seen_txids.clear()
+
                         inputs = get_input_map(tx)
                         outputs = get_output_map(tx)
                         total = sum(outputs.values())
@@ -184,13 +217,15 @@ async def mempool_ws_worker():
                         if total < MIN_WHALE_BTC:
                             continue
 
+                        store_tx_io(txid, inputs, outputs)
+
                         # --- DB WRITE BLOCK ---
                         conn = None
                         try:
                             conn = get_db()
                             c = conn.cursor()
 
-                            # кластеризация
+                            # Кластеризация
                             for addr in list(inputs.keys()) + list(outputs.keys()):
                                 cid, _ = resolve_cluster(addr, c)
                                 if not cid:
@@ -200,21 +235,23 @@ async def mempool_ws_worker():
 
                             flows = classify_flow(inputs, outputs, c)
 
+                            # вставляем whale_tx ОДИН раз
+                            c.execute("""
+                                INSERT OR IGNORE INTO whale_tx(txid, btc, time)
+                                VALUES (?,?,?)
+                            """, (txid, total, now))
+
                             for from_c, to_c, flow_type, flow_btc in flows:
-                                c.execute("""
-                                    INSERT OR IGNORE INTO whale_tx(txid, btc, time)
-                                    VALUES (?,?,?)
-                                """, (txid, total, now))
 
                                 c.execute("""
-                                    INSERT OR REPLACE INTO whale_classification
+                                    INSERT OR IGNORE INTO whale_classification
                                     (txid, btc, time, from_cluster, to_cluster, flow_type)
                                     VALUES (?,?,?,?,?,?)
                                 """, (txid, flow_btc, now, from_c, to_c, flow_type))
 
                                 if flow_btc >= ALERT_WHALE_BTC:
                                     c.execute("""
-                                        INSERT OR REPLACE INTO alert_tx
+                                        INSERT INTO alert_tx
                                         (txid, btc, time, flow_type, from_cluster, to_cluster)
                                         VALUES (?,?,?,?,?,?)
                                     """, (txid, flow_btc, now, flow_type, from_c, to_c))

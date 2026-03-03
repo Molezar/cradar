@@ -1,4 +1,4 @@
-#database.py
+# database.py
 import sqlite3
 from pathlib import Path
 from config import Config
@@ -23,11 +23,10 @@ def get_db(as_dict=True, retries=3, delay=0.3):
             else:
                 conn.row_factory = None
 
-            # WAL режим и настройки
             conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("PRAGMA synchronous=NORMAL;")
             conn.execute("PRAGMA busy_timeout=5000;")
-            conn.execute("PRAGMA foreign_keys = ON")  # безопаснее для связей
+            conn.execute("PRAGMA foreign_keys = ON")
 
             return conn
         except sqlite3.OperationalError as e:
@@ -38,12 +37,13 @@ def get_db(as_dict=True, retries=3, delay=0.3):
 
     raise Exception("Database is locked after retries")
 
+
 def init_db():
     conn = get_db()
     c = conn.cursor()
 
     # =====================================================
-    # 1. Whale transactions (raw large tx storage)
+    # Whale TX
     # =====================================================
     c.execute("""
     CREATE TABLE IF NOT EXISTS whale_tx (
@@ -54,24 +54,11 @@ def init_db():
     """)
 
     # =====================================================
-    # 2. Addresses (all seen addresses)
-    # =====================================================
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS addresses (
-        address TEXT PRIMARY KEY,
-        first_seen INTEGER,
-        last_seen INTEGER,
-        total_in REAL DEFAULT 0,
-        total_out REAL DEFAULT 0,
-        tx_count INTEGER DEFAULT 0
-    )
-    """)
-
-    # =====================================================
-    # 3. Transaction IO mapping
+    # TX IO
     # =====================================================
     c.execute("""
     CREATE TABLE IF NOT EXISTS tx_inputs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         txid TEXT,
         address TEXT,
         btc REAL
@@ -80,25 +67,37 @@ def init_db():
 
     c.execute("""
     CREATE TABLE IF NOT EXISTS tx_outputs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         txid TEXT,
         address TEXT,
         btc REAL
     )
     """)
 
-    # Индексы для скорости
+    # Обычные индексы
     c.execute("CREATE INDEX IF NOT EXISTS idx_tx_inputs_txid ON tx_inputs(txid)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_tx_outputs_txid ON tx_outputs(txid)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_tx_inputs_addr ON tx_inputs(address)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_tx_outputs_addr ON tx_outputs(address)")
 
+    # 🔒 Защита от дублей IO (важно для INSERT OR IGNORE)
+    c.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_tx_inputs_unique
+    ON tx_inputs(txid, address, btc)
+    """)
+
+    c.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_tx_outputs_unique
+    ON tx_outputs(txid, address, btc)
+    """)
+
     # =====================================================
-    # 4. Unified Clusters (EXCHANGE + BEHAVIORAL)
+    # Clusters
     # =====================================================
     c.execute("""
     CREATE TABLE IF NOT EXISTS clusters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        cluster_type TEXT NOT NULL,        -- EXCHANGE / BEHAVIORAL
+        cluster_type TEXT NOT NULL,
         name TEXT,
         subtype TEXT,
         confidence REAL DEFAULT 0.0,
@@ -112,7 +111,7 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_clusters_name ON clusters(name)")
 
     # =====================================================
-    # 5. Address ↔ Cluster binding
+    # Cluster addresses
     # =====================================================
     c.execute("""
     CREATE TABLE IF NOT EXISTS cluster_addresses (
@@ -128,30 +127,55 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_cluster_addr_cluster ON cluster_addresses(cluster_id)")
 
     # =====================================================
-    # 6. Whale classification
+    # Whale classification (flow-based)
     # =====================================================
     c.execute("""
     CREATE TABLE IF NOT EXISTS whale_classification (
-        txid TEXT PRIMARY KEY,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        txid TEXT,
         btc REAL,
         time INTEGER,
-
         from_cluster INTEGER,
         to_cluster INTEGER,
-
-        flow_type TEXT DEFAULT 'UNKNOWN',
-
+        flow_type TEXT,
         FOREIGN KEY(from_cluster) REFERENCES clusters(id),
         FOREIGN KEY(to_cluster) REFERENCES clusters(id)
     )
     """)
 
+    c.execute("""
+    CREATE INDEX IF NOT EXISTS idx_whale_time
+    ON whale_classification(time DESC)
+    """)
+
+    c.execute("""
+    CREATE INDEX IF NOT EXISTS idx_whale_time_flow
+    ON whale_classification(time, flow_type)
+    """)
+
+    c.execute("""
+    CREATE INDEX IF NOT EXISTS idx_whale_to_cluster
+    ON whale_classification(to_cluster)
+    """)
+
+    c.execute("""
+    CREATE INDEX IF NOT EXISTS idx_whale_from_cluster
+    ON whale_classification(from_cluster)
+    """)
+
+    # Защита от дублей flows
+    c.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_whale_unique_flow
+    ON whale_classification(txid, flow_type, from_cluster, to_cluster)
+    """)
+
     # =====================================================
-    # 7. Persistent ALERT storage (важно!)
+    # ALERT TX
     # =====================================================
     c.execute("""
     CREATE TABLE IF NOT EXISTS alert_tx (
-        txid TEXT PRIMARY KEY,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        txid TEXT,
         btc REAL,
         time INTEGER,
         flow_type TEXT,
@@ -162,10 +186,18 @@ def init_db():
     )
     """)
 
-    c.execute("CREATE INDEX IF NOT EXISTS idx_alert_time ON alert_tx(time DESC)")
+    c.execute("""
+    CREATE INDEX IF NOT EXISTS idx_alert_time
+    ON alert_tx(time DESC)
+    """)
+
+    c.execute("""
+    CREATE INDEX IF NOT EXISTS idx_alert_txid
+    ON alert_tx(txid)
+    """)
 
     # =====================================================
-    # 8. Exchange Flow Aggregation
+    # Exchange Flow
     # =====================================================
     c.execute("""
     CREATE TABLE IF NOT EXISTS exchange_flow (
@@ -179,23 +211,15 @@ def init_db():
     """)
 
     c.execute("CREATE INDEX IF NOT EXISTS idx_exchange_flow_cluster ON exchange_flow(cluster_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_flow_ts ON exchange_flow(ts)")
 
-    # =====================================================
-    # 9. Behavioral statistics
-    # =====================================================
     c.execute("""
-    CREATE TABLE IF NOT EXISTS address_behavior (
-        address TEXT PRIMARY KEY,
-        avg_tx_value REAL DEFAULT 0,
-        max_tx_value REAL DEFAULT 0,
-        unique_counterparties INTEGER DEFAULT 0,
-        rapid_tx_count INTEGER DEFAULT 0,
-        FOREIGN KEY(address) REFERENCES addresses(address)
-    )
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_exchange_flow_ts_cluster_flow
+    ON exchange_flow(ts, cluster_id, flow_type)
     """)
 
     # =====================================================
-    # 10. Whale correlation learning
+    # Whale correlation
     # =====================================================
     c.execute("""
     CREATE TABLE IF NOT EXISTS whale_correlation (
@@ -206,7 +230,7 @@ def init_db():
     """)
 
     # =====================================================
-    # 11. BTC price history
+    # BTC price
     # =====================================================
     c.execute("""
     CREATE TABLE IF NOT EXISTS btc_price (
@@ -215,45 +239,77 @@ def init_db():
     )
     """)
 
+    c.execute("CREATE INDEX IF NOT EXISTS idx_price_ts ON btc_price(ts)")
+
     # =====================================================
-    # SEED EXCHANGE CLUSTERS (ANCHORS)
+    # BTC candles
     # =====================================================
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS btc_candles_1m (
+        open_time INTEGER PRIMARY KEY,
+        open REAL NOT NULL,
+        high REAL NOT NULL,
+        low REAL NOT NULL,
+        close REAL NOT NULL,
+        volume REAL NOT NULL
+    )
+    """)
 
-    anchors = [
-        ('bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh', 'Binance'),
-        ('bc1q0e0g9s7n6yd9e5n6g6n2p9n7w6g2g7p7y9kz9f', 'Binance'),
-        ('bc1qz5h7d0y8m4c9p8g6e3x0k9r7l5v6t4s3n2a1q0', 'Coinbase'),
-        ('1Kraken4x3kJp9H5e5mZ6T7N8B4QWJf6', 'Kraken'),
-        ('1BitfiNexColdWalletX93P7kT3', 'Bitfinex'),
-        ('1BitstampVaultMainCold123', 'Bitstamp'),
-    ]
+    c.execute("""
+    CREATE INDEX IF NOT EXISTS idx_btc_candles_1m_time
+    ON btc_candles_1m(open_time)
+    """)
 
-    now = int(time.time())
+    # =====================================================
+    # Demo account
+    # =====================================================
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS demo_account (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        balance REAL NOT NULL,
+        updated_at INTEGER
+    )
+    """)
 
-    for addr, exch in anchors:
-        # 1. Create exchange cluster if not exists
-        c.execute("""
-        INSERT OR IGNORE INTO clusters
-        (cluster_type, name, subtype, confidence, size, created_at, last_updated)
-        VALUES ('EXCHANGE', ?, 'COLD', 1.0, 1, ?, ?)
-        """, (exch, now, now))
+    c.execute("""
+    INSERT OR IGNORE INTO demo_account (id, balance, updated_at)
+    VALUES (1, 1000, strftime('%s','now'))
+    """)
 
-        # 2. Get cluster id safely
-        c.execute("""
-        SELECT id FROM clusters
-        WHERE cluster_type='EXCHANGE' AND name=?
-        """, (exch,))
-        row = c.fetchone()
-        if not row:
-            continue
-        cluster_id = row["id"]
+    # =====================================================
+    # Trade signals
+    # =====================================================
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS trade_signals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at INTEGER,
+        direction TEXT,
+        entry REAL,
+        stop REAL,
+        take REAL,
+        leverage INTEGER DEFAULT 5,
+        status TEXT DEFAULT 'OPEN',
+        result REAL DEFAULT 0,
+        position_size REAL DEFAULT 0
+    )
+    """)
 
-        # 3. Bind anchor address
-        c.execute("""
-        INSERT OR IGNORE INTO cluster_addresses
-        (address, cluster_id, confidence, first_seen, last_seen)
-        VALUES (?, ?, 1.0, ?, ?)
-        """, (addr, cluster_id, now, now))
+    c.execute("CREATE INDEX IF NOT EXISTS idx_trade_status ON trade_signals(status)")
+
+    # =====================================================
+    # Bot settings
+    # =====================================================
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS bot_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        auto_mode INTEGER DEFAULT 0
+    )
+    """)
+
+    c.execute("""
+    INSERT OR IGNORE INTO bot_settings (id, auto_mode)
+    VALUES (1, 0)
+    """)
 
     conn.commit()
     conn.close()
