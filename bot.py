@@ -329,13 +329,12 @@ async def trade_monitor():
                             await bot.send_message(cid, text)
                         except:
                             subscribers.discard(cid)
-                except Exception as e:
-                    logger.error(f"AUTO signal error: {e}")
+                        logger.error(f"AUTO signal error: {e}")
 
         await asyncio.sleep(5)
         
 # ==============================================
-# Hearbeat
+# Hearbeat88
 # ==============================================
 async def bot_heartbeat():
     while True:
