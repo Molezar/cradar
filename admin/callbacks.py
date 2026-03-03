@@ -28,7 +28,8 @@ from admin.signal.callbacks import (
     auto_stop,
     show_demo_balance,
     confirm_reset_stats,
-    reset_stats
+    reset_stats,
+    handle_close_by_market
 )
 
 from aiogram.fsm.state import StatesGroup, State
@@ -117,7 +118,9 @@ async def handle_admin_callbacks(callback: types.CallbackQuery, state: FSMContex
             await handle_cancel_trade(callback)
         elif data == "signal:refresh":
             await handle_refresh_signal(callback)
-        
+        elif data == "close:market":
+            await handle_close_by_market(callback)
+            
         elif data == "auto:menu":
             await auto_menu(callback)
         

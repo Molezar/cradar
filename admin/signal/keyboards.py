@@ -10,9 +10,15 @@ def get_signal_kb():
                     text="🔄 Обновить сигнал",
                     callback_data="signal:refresh"
                 ),
+            ],
+            [
                 InlineKeyboardButton(
-                    text="❌ Закрыть сделку",
+                    text="❌ Закрыть (CANCELLED)",
                     callback_data="cancel:trade"
+                ),
+                InlineKeyboardButton(
+                    text="💰 Закрыть по рынку",
+                    callback_data="close:market"
                 )
             ]
         ]

@@ -198,88 +198,27 @@ def save_signal(direction, entry, stop, take, leverage, position_size):
             conn.close()
 
 async def handle_signal(callback: types.CallbackQuery):
-    """Обработка сигнала через кнопку в Telegram."""
     await callback.answer()
+
     try:
-        if has_open_trade():
-            conn = None
-            try:
-                conn = get_db()
-        
-                row = conn.execute("""
-                    SELECT *
-                    FROM trade_signals
-                    WHERE status='OPEN'
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                """).fetchone()
-        
-                if row:
-                    price = await get_current_price()
-        
-                    direction = row["direction"]
-                    entry = row["entry"]
-                    stop = row["stop"]
-                    take = row["take"]
-                    leverage = row["leverage"]
-                    position_size = row["position_size"]
-        
-                    # текущий PnL
-                    if direction == "LONG":
-                        pnl = (price - entry) * position_size
-                    else:
-                        pnl = (entry - price) * position_size
-        
-                    text = (
-                        "⚠️ <b>Уже есть открытая сделка</b>\n\n"
-                        f"📍 Направление: {direction}\n"
-                        f"📥 Entry: {entry}\n"
-                        f"🛑 Stop: {stop}\n"
-                        f"🎯 Take: {take}\n"
-                        f"📈 Плечо: {leverage}x\n"
-                        f"💰 Размер: {position_size:.6f} BTC\n\n"
-                        f"💲 Текущая цена: {price}\n"
-                        f"📊 Текущий PnL: {pnl:+.2f} USDT"
-                    )
-        
-                    await callback.message.answer(
-                        text,
-                        parse_mode="HTML"
-                    )
-        
-                else:
-                    await callback.message.answer(
-                        "⚠️ Уже есть открытая сделка."
-                    )
-        
-            finally:
-                if conn:
-                    conn.close()
-        
+        result = await generate_and_save_signal()
+
+        if result == "already_open":
+            await callback.message.answer("⚠️ Уже есть открытая сделка.")
             return
-        
-        strategy = AggressiveStrategy()
-        result = await strategy.generate_signal()
-        logger.info(f"Strategy result: {result}")
-        
+
         if result is None:
             await callback.message.answer("⚖️ Сейчас нет чёткого сигнала. Рынок во флэте.")
             return
-        
-        direction, entry, stop, take, leverage = result
-
-        balance = get_demo_balance()
-        position_size = calculate_position_size(balance, entry, stop)
-        save_signal(direction, entry, stop, take, leverage, position_size)
 
         text = (
-            f"📊 <b>Баланс:</b> {balance:.2f} USDT\n\n"
-            f"🎯 <b>Рекомендация:</b> {direction}\n"
-            f"📍 Entry: {entry}\n"
-            f"🛑 Stop: {stop}\n"
-            f"🎯 Take: {take}\n"
-            f"📈 Плечо: {leverage}x\n"
-            f"💰 Размер позиции: {position_size:.6f} BTC\n"
+            f"📊 <b>Баланс:</b> {result['balance']:.2f} USDT\n\n"
+            f"🎯 <b>Рекомендация:</b> {result['direction']}\n"
+            f"📍 Entry: {result['entry']}\n"
+            f"🛑 Stop: {result['stop']}\n"
+            f"🎯 Take: {result['take']}\n"
+            f"📈 Плечо: {result['leverage']}x\n"
+            f"💰 Размер позиции: {result['position_size']:.6f} BTC\n"
             f"⚠ Риск: {RISK_PER_TRADE*100:.0f}%"
         )
 
@@ -292,6 +231,37 @@ async def handle_signal(callback: types.CallbackQuery):
     except Exception as e:
         logger.exception(f"Signal error: {e}")
         await callback.message.answer("⚠️ Ошибка расчёта сигнала")
+
+async def handle_close_by_market(callback: types.CallbackQuery):
+    await callback.answer()
+
+    pnl = await close_open_trade_by_market()
+
+    if pnl is None:
+        await callback.message.answer("⚠️ Нет открытой сделки.")
+        return
+
+    percent = 0
+
+    # пересчитываем статистику
+    stats = calculate_system_stats()
+
+    emoji = "🟢" if pnl > 0 else "🔴"
+
+    msg = (
+        f"{emoji} <b>Сделка закрыта по рынку</b>\n\n"
+        f"💎 PnL: <b>{pnl:+.2f} USDT</b>\n"
+        f"💼 Баланс: <b>{stats['balance']:.2f} USDT</b>\n\n"
+
+        f"━━━━━━━━━━━━━━\n"
+        f"📊 <b>System Stats</b>\n"
+        f"Всего сделок: {stats['total_trades']}\n"
+        f"TP: {stats['wins']} | SL: {stats['losses']}\n"
+        f"Winrate: {stats['winrate']}%\n"
+        f"💰 Total PnL: {stats['total_pnl']:+.2f} USDT"
+    )
+
+    await callback.message.answer(msg, parse_mode="HTML")
 
 async def handle_cancel_trade(
     callback: types.CallbackQuery,
@@ -423,3 +393,30 @@ async def reset_stats(callback: types.CallbackQuery):
     finally:
         if conn:
             conn.close()
+ 
+async def generate_and_save_signal():
+    if has_open_trade():
+        return "already_open"
+
+    strategy = AggressiveStrategy()
+    result = await strategy.generate_signal()
+
+    if result is None:
+        return None
+
+    direction, entry, stop, take, leverage = result
+
+    balance = get_demo_balance()
+    position_size = calculate_position_size(balance, entry, stop)
+
+    save_signal(direction, entry, stop, take, leverage, position_size)
+
+    return {
+        "direction": direction,
+        "entry": entry,
+        "stop": stop,
+        "take": take,
+        "leverage": leverage,
+        "position_size": position_size,
+        "balance": balance
+    }

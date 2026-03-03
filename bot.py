@@ -14,8 +14,11 @@ from admin import setup_admin
 from utils import calculate_system_stats
 from services.price import get_current_price
 from services.api_config import API, ssl_context
-from admin.signal.callbacks import get_auto_mode
-from admin.signal.callbacks import handle_signal
+from admin.signal.callbacks import (
+    get_auto_mode,
+    generate_and_save_signal,
+    handle_signal
+)
 
 logger = get_logger(__name__)
 
@@ -309,20 +312,23 @@ async def trade_monitor():
 
             if open_count == 0:
 
-                class FakeCallback:
-                    def __init__(self, bot, cid):
-                        self.message = type("obj", (), {"chat": type("obj", (), {"id": cid})})
-                        self.from_user = type("obj", (), {"id": cid})
-                        self.bot = bot
-
-                    async def answer(self):
-                        pass
-
-                cid = next(iter(subscribers))
-
-                try:
-                    fake = FakeCallback(bot, cid)
-                    await handle_signal(fake)
+                result = await generate_and_save_signal()
+                
+                if isinstance(result, dict):
+                    text = (
+                        f"🤖 <b>AUTO SIGNAL</b>\n\n"
+                        f"🎯 {result['direction']}\n"
+                        f"📍 Entry: {result['entry']}\n"
+                        f"🛑 Stop: {result['stop']}\n"
+                        f"🎯 Take: {result['take']}\n"
+                        f"💰 Size: {result['position_size']:.6f} BTC"
+                    )
+                
+                    for cid in list(subscribers):
+                        try:
+                            await bot.send_message(cid, text)
+                        except:
+                            subscribers.discard(cid)
                 except Exception as e:
                     logger.error(f"AUTO signal error: {e}")
 
