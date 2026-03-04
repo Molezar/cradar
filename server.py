@@ -41,6 +41,109 @@ def fetch_btc_price():
         logger.warning(f"Failed to fetch BTC price: {e}")
         return None
 
+def fetch_btc_price_with_fallback():
+    """Получает цену из нескольких источников с резервированием"""
+    sources = [
+        {
+            "name": "Binance",
+            "url": "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
+            "parser": lambda x: float(x["price"])
+        },
+        {
+            "name": "Bybit",
+            "url": "https://api.bybit.com/v5/market/tickers?category=spot&symbol=BTCUSDT",
+            "parser": lambda x: float(x["result"]["list"][0]["lastPrice"])
+        },
+        {
+            "name": "KuCoin",
+            "url": "https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=BTC-USDT",
+            "parser": lambda x: float(x["data"]["price"])
+        },
+        {
+            "name": "OKX",
+            "url": "https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT",
+            "parser": lambda x: float(x["data"][0]["last"])
+        }
+    ]
+    
+    for source in sources:
+        try:
+            r = requests.get(source["url"], timeout=5)
+            r.raise_for_status()
+            price = source["parser"](r.json())
+            if price and price > 0:
+                logger.info(f"Price from {source['name']}: {price}")
+                return price
+        except Exception as e:
+            logger.warning(f"Failed to fetch from {source['name']}: {e}")
+            continue
+    
+    # Если все источники недоступны, пробуем получить последнюю цену из БД
+    try:
+        conn = get_db()
+        row = conn.execute(
+            "SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1"
+        ).fetchone()
+        if row and row["price"] > 0:
+            logger.warning(f"Using last known price from DB: {row['price']}")
+            return row["price"]
+    except Exception as e:
+        logger.error(f"Failed to get price from DB: {e}")
+    finally:
+        if conn:
+            conn.close()
+    
+    return None
+
+def price_sampler():
+    """Обновляет цену в БД каждые 30 секунд с резервными источниками"""
+    consecutive_failures = 0
+    
+    while True:
+        try:
+            # Пробуем получить цену с резервированием
+            price = fetch_btc_price_with_fallback()
+            
+            if price:
+                consecutive_failures = 0
+                now = int(time.time())
+                
+                conn = None
+                try:
+                    conn = get_db()
+                    c = conn.cursor()
+                    
+                    c.execute("""
+                        INSERT INTO btc_price(ts, price)
+                        VALUES (?, ?)
+                        ON CONFLICT(ts) DO UPDATE SET
+                            price=excluded.price
+                    """, (now, price))
+                    
+                    conn.commit()
+                    logger.info(f"✅ Price updated in DB: {price}")
+                    
+                except Exception as db_error:
+                    logger.error(f"Database error in price_sampler: {db_error}")
+                finally:
+                    if conn:
+                        conn.close()
+            else:
+                consecutive_failures += 1
+                logger.error(f"❌ Failed to fetch price from all sources (failure #{consecutive_failures})")
+                
+                # Если много ошибок подряд, увеличиваем паузу
+                if consecutive_failures > 5:
+                    logger.warning("Too many failures, increasing sleep time")
+                    time.sleep(60)
+                    continue
+                    
+        except Exception as e:
+            logger.exception(f"Critical error in price_sampler: {e}")
+            consecutive_failures += 1
+        
+        # Обычная пауза 30 секунд
+        time.sleep(30)
 
 def fetch_binance_klines(limit=2):
     try:
@@ -58,39 +161,6 @@ def fetch_binance_klines(limit=2):
     except Exception as e:
         logger.warning(f"Failed to fetch klines: {e}")
         return []
-        
-
-def price_sampler():
-    while True:
-        try:
-            price = fetch_btc_price()
-            if price:
-
-                now = int(time.time())
-
-                conn = None
-                try:
-                    conn = get_db()
-                    c = conn.cursor()
-
-                    c.execute("""
-                        INSERT INTO btc_price(ts, price)
-                        VALUES (?, ?)
-                        ON CONFLICT(ts) DO UPDATE SET
-                            price=excluded.price
-                    """, (now, price))
-
-                    conn.commit()
-
-                finally:
-                    if conn:
-                        conn.close()
-
-        except Exception:
-            logger.exception("Price sampler error")
-
-        time.sleep(30)
-
 
 def candle_sampler():
     while True:
