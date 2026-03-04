@@ -1,5 +1,4 @@
-# bot.py (исправленная версия)
-
+#bot.py
 import time
 import asyncio
 import aiohttp
@@ -44,7 +43,7 @@ dp = Dispatcher()
 setup_admin(dp, subscribers)
 
 # ==============================================
-# Функция для получения информации о свечах
+# Функции для мониторинга свечей
 # ==============================================
 async def get_candle_info():
     """Получает информацию о последних свечах из БД"""
@@ -53,40 +52,31 @@ async def get_candle_info():
         conn = get_db()
         c = conn.cursor()
         
-        # Получаем последние 3 свечи
-        rows = c.execute("""
+        # Получаем последнюю свечу
+        row = c.execute("""
             SELECT open_time, open, high, low, close, volume
             FROM btc_candles_1m
             ORDER BY open_time DESC
-            LIMIT 3
-        """).fetchall()
+            LIMIT 1
+        """).fetchone()
         
-        if not rows:
+        if not row:
             return None
             
-        candles_info = []
-        for row in rows:
-            candle = dict(row)
-            # Конвертируем timestamp в читаемый формат
-            candle_time = time.strftime('%H:%M:%S', time.localtime(candle['open_time']))
-            candles_info.append({
-                "time": candle_time,
-                "open": candle['open'],
-                "high": candle['high'],
-                "low": candle['low'],
-                "close": candle['close'],
-                "volume": candle['volume']
-            })
-        
-        # Проверяем актуальность последней свечи
-        last_candle_time = rows[0]['open_time']
+        candle = dict(row)
+        candle_time = time.strftime('%H:%M:%S', time.localtime(candle['open_time']))
         current_time = int(time.time())
-        time_diff = current_time - last_candle_time
+        time_diff = current_time - candle['open_time']
         
         return {
-            "candles": candles_info,
-            "last_candle_age": time_diff,
-            "is_fresh": time_diff < 90  # свеча считается свежей, если ей меньше 90 секунд
+            "time": candle_time,
+            "open": candle['open'],
+            "high": candle['high'],
+            "low": candle['low'],
+            "close": candle['close'],
+            "volume": candle['volume'],
+            "age": time_diff,
+            "is_fresh": time_diff < 90
         }
         
     except Exception as e:
@@ -96,31 +86,24 @@ async def get_candle_info():
         if conn:
             conn.close()
 
-# ==============================================
-# Функция для проверки статуса API свечей
-# ==============================================
 async def check_candles_api():
-    """Проверяет доступность API свечей через прямой запрос к Binance"""
+    """Проверяет доступность API свечей напрямую"""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 "https://api.binance.com/api/v3/klines",
-                params={
-                    "symbol": "BTCUSDT",
-                    "interval": "1m",
-                    "limit": 1
-                },
+                params={"symbol": "BTCUSDT", "interval": "1m", "limit": 1},
                 timeout=5
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if data and len(data) > 0:
-                        return True, float(data[0][4])  # возвращаем цену закрытия
+                        return True, float(data[0][4])
                 return False, None
     except Exception as e:
         logger.debug(f"Candles API check failed: {e}")
         return False, None
-
+        
 # ==============================================
 # SSE Listener
 # ==============================================
@@ -453,57 +436,75 @@ async def trade_monitor():
 
         await asyncio.sleep(5)
 
+      
 # ==============================================
-# Heartbeat с логированием свечей
+# Hearbeat
 # ==============================================
 async def bot_heartbeat():
-    """Периодический мониторинг состояния бота с проверкой свечей"""
-    consecutive_candle_failures = 0
-    
     while True:
         try:
             # Получаем текущую цену
             price = await get_current_price()
             price_status = "✅" if price > 0 else "❌"
             
-            # Проверяем API свечей напрямую
-            candles_api_ok, api_close_price = await check_candles_api()
-            
-            # Получаем информацию о свечах из БД
-            candle_info = await get_candle_info()
+            # Получаем информацию о свечах
+            candle = await get_candle_info()
+            candles_api_ok, api_price = await check_candles_api()
             
             # Формируем статус свечей
-            if candle_info:
-                last_candle = candle_info["candles"][0]
-                candle_age = candle_info["last_candle_age"]
+            if candle:
+                age_status = "✅" if candle["is_fresh"] else "⚠️" if candle["age"] < 300 else "❌"
                 
-                if candle_info["is_fresh"]:
-                    age_status = "✅"
-                elif candle_age < 300:
-                    age_status = "⚠️"
-                else:
-                    age_status = "❌"
-                
-                # Проверяем консистентность данных
+                # Проверка консистентности с текущей ценой
                 if price > 0:
-                    price_consistent = abs(price - last_candle["close"]) / price < 0.01
-                    consistency_status = "✅" if price_consistent else "⚠️"
+                    diff = abs(price - candle["close"]) / price * 100
+                    consistency = "✅" if diff < 1 else "⚠️" if diff < 3 else "❌"
                 else:
-                    consistency_status = "❓"
+                    consistency = "❓"
                 
-                # Логируем подробную информацию о свечах
                 candle_log = (
-                    f"\n📊 CANDLES STATUS:"
-                    f"\n  • Last candle: {last_candle['time']}"
-                    f"\n  • O: {last_candle['open']:.2f} | H: {last_candle['high']:.2f} | L: {last_candle['low']:.2f} | C: {last_candle['close']:.2f}"
-                    f"\n  • Volume: {last_candle['volume']:.4f} BTC"
-                    f"\n  • Age: {candle_age}s {age_status}"
-                    f"\n  • Price consistency: {consistency_status}"
-                    f"\n  • API direct: {'✅' if candles_api_ok else '❌'}"
+                    f"\n📊 CANDLE: {candle['time']}"
+                    f"\n  O:{candle['open']:.0f} H:{candle['high']:.0f} L:{candle['low']:.0f} C:{candle['close']:.0f}"
+                    f"\n  Vol:{candle['volume']:.2f} BTC | Age:{candle['age']}s {age_status}"
+                    f"\n  Consistency:{consistency} | API:{'✅' if candles_api_ok else '❌'}"
                 )
                 
-                # Если есть расхождение с прямым API, логируем это
-                if candles_api_ok and api_close_price:
-                    diff_percent = abs(api_close_price - last_candle["close"]) / api_close_price * 100
-                    if diff_percent > 0.5:
-                        candle
+                # Если есть расхождение с API
+                if candles_api_ok and api_price and abs(api_price - candle['close']) / api_price * 100 > 1:
+                    candle_log += f"\n  ⚠️ API diff: {abs(api_price - candle['close']):.2f}"
+            else:
+                candle_log = "\n📊 CANDLE: ❌ No data"
+            
+            # Логируем
+            logger.info(
+                f"[BOT] Alive. Subs:{len(subscribers)} Seen:{len(seen_txids)} "
+                f"Price:{price_status} {price if price > 0 else 'N/A'}"
+                f"{candle_log}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Heartbeat error: {e}")
+            
+        await asyncio.sleep(120)
+        
+# ==============================================
+# Main
+# ==============================================
+async def main():
+    listener_task = asyncio.create_task(whale_listener())
+    heartbeat_task = asyncio.create_task(bot_heartbeat())
+    print("BOT DB PATH:", Config.DB_PATH)
+    monitor_task = asyncio.create_task(trade_monitor())
+    logger.info("Polling starting...")
+    try:
+        await dp.start_polling(bot)
+    finally:
+        listener_task.cancel()
+        try:
+            await listener_task
+        except asyncio.CancelledError:
+            pass
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
