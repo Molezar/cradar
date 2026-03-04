@@ -1,4 +1,4 @@
-# bot.py (обновленная версия с логированием свечей)
+# bot.py (исправленная версия)
 
 import time
 import asyncio
@@ -48,6 +48,7 @@ setup_admin(dp, subscribers)
 # ==============================================
 async def get_candle_info():
     """Получает информацию о последних свечах из БД"""
+    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
@@ -457,7 +458,6 @@ async def trade_monitor():
 # ==============================================
 async def bot_heartbeat():
     """Периодический мониторинг состояния бота с проверкой свечей"""
-    last_candle_log = 0
     consecutive_candle_failures = 0
     
     while True:
@@ -476,11 +476,20 @@ async def bot_heartbeat():
             if candle_info:
                 last_candle = candle_info["candles"][0]
                 candle_age = candle_info["last_candle_age"]
-                age_status = "✅" if candle_info["is_fresh"] else "⚠️" if candle_age < 300 else "❌"
+                
+                if candle_info["is_fresh"]:
+                    age_status = "✅"
+                elif candle_age < 300:
+                    age_status = "⚠️"
+                else:
+                    age_status = "❌"
                 
                 # Проверяем консистентность данных
-                price_consistent = abs(price - last_candle["close"]) / price < 0.01 if price > 0 else True
-                consistency_status = "✅" if price_consistent else "⚠️"
+                if price > 0:
+                    price_consistent = abs(price - last_candle["close"]) / price < 0.01
+                    consistency_status = "✅" if price_consistent else "⚠️"
+                else:
+                    consistency_status = "❓"
                 
                 # Логируем подробную информацию о свечах
                 candle_log = (
@@ -497,7 +506,4 @@ async def bot_heartbeat():
                 if candles_api_ok and api_close_price:
                     diff_percent = abs(api_close_price - last_candle["close"]) / api_close_price * 100
                     if diff_percent > 0.5:
-                        candle_log += f"\n  ⚠️ API diff: {diff_percent:.2f}% (DB: {last_candle['close']:.2f} vs API: {api_close_price:.2f})"
-                
-                # Сбрасываем счетчик ошибок
-                
+                        candle
