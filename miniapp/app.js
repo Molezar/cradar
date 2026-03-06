@@ -28,19 +28,21 @@ async function load() {
         const prc = await fetch("/price?t=" + Date.now());
         const pcj = await prc.json();
 
+        // ===== НОВЫЙ ЗАПРОС =====
+        const vol = await fetch("/volumes?t=" + Date.now());
+        const volj = await vol.json();
+        // =========================
+
         let out = "";
 
         if (wj.whales && Array.isArray(wj.whales)) {
-
             for (const x of wj.whales) {
-
                 const t = fmtTime(x.time);
                 const btc = Number(x.btc || 0);
                 const isHuge = btc >= 1000;
                 const cls = isHuge ? "whale huge" : "whale";
 
                 let dirArrow = "";
-
                 if (x.flow_type === "DEPOSIT") dirArrow = "→";
                 else if (x.flow_type === "WITHDRAW") dirArrow = "←";
                 else if (x.flow_type === "INTERNAL") dirArrow = "↔";
@@ -69,13 +71,11 @@ async function load() {
         let pred = "<br><div class='pred'>=== AI MARKET FORECAST ===</div>";
 
         for (const horizon in pj) {
-
             const row = pj[horizon];
             if (!row) continue;
 
             const pct = Number(row.pct || 0);
             const target = Number(row.target || 0);
-
             const dir = pct > 0 ? "⬆" : pct < 0 ? "⬇" : "→";
 
             pred += `
@@ -88,6 +88,17 @@ async function load() {
         }
 
         document.getElementById("forecast").innerHTML = pred;
+
+        // ===== ОТРИСОВКА VOLUMES =====
+        let volHtml = "<div class='volumes'><div class='pred'>=== 1H VOLUMES ===</div>";
+        volHtml += `<div>DEPOSIT: <span class='flow deposit'>${volj.deposit.toFixed(2)} BTC</span></div>`;
+        volHtml += `<div>WITHDRAW: <span class='flow withdraw'>${volj.withdraw.toFixed(2)} BTC</span></div>`;
+        let netColor = volj.net >= 0 ? "positive" : "negative";
+        volHtml += `<div>NET (W-D): <span class='net ${netColor}'>${volj.net.toFixed(2)} BTC</span></div>`;
+        volHtml += "</div>";
+        document.getElementById("volumes").innerHTML = volHtml;
+        // ==============================
+
         document.getElementById("list").innerHTML = out;
 
     } catch (e) {

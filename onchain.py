@@ -151,9 +151,9 @@ def classify_flow(inputs, outputs, cursor):
         net = in_vol - out_vol
 
         if net > 0:
-            flows.append((None, cid, "DEPOSIT", net))
+            flows.append((None, cid, "WITHDRAW", net))
         elif net < 0:
-            flows.append((cid, None, "WITHDRAW", -net))
+            flows.append((cid, None, "DEPOSIT", -net))
 
     return flows
 

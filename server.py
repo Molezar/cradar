@@ -365,6 +365,48 @@ def whales():
             conn.close()
 
 
+@app.route("/volumes")
+def volumes():
+    conn = None
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        now = int(time.time())
+        since = now - 3600  # последний час
+
+        # Сумма DEPOSIT за последний час
+        c.execute("""
+            SELECT COALESCE(SUM(btc), 0) as total
+            FROM whale_classification
+            WHERE time > ? AND flow_type = 'DEPOSIT'
+        """, (since,))
+        deposit = c.fetchone()["total"]
+
+        # Сумма WITHDRAW за последний час
+        c.execute("""
+            SELECT COALESCE(SUM(btc), 0) as total
+            FROM whale_classification
+            WHERE time > ? AND flow_type = 'WITHDRAW'
+        """, (since,))
+        withdraw = c.fetchone()["total"]
+
+        net = withdraw - deposit  # разница (WITHDRAW - DEPOSIT)
+
+        return jsonify({
+            "deposit": round(deposit, 2),
+            "withdraw": round(withdraw, 2),
+            "net": round(net, 2),
+            "since": since,
+            "now": now
+        })
+    except Exception:
+        logger.exception("Volumes endpoint error")
+        return jsonify({"error": "Internal server error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 @app.route("/price")
 def price():
     conn = None
