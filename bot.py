@@ -214,73 +214,82 @@ async def whale_listener():
 
 async def netflow_alert_monitor():
     """Мониторит чистый поток (withdraw - deposit) за последний час и шлёт алерты при значительных отклонениях."""
-    await asyncio.sleep(10)  # небольшая задержка при старте
+    await asyncio.sleep(10)
     logger.info("Starting netflow alert monitor")
-    
-    last_alert_net = None
+
     last_alert_time = 0
-    last_alert_sign = None  # 'positive' or 'negative'
-    
+    last_alert_sign = None
+
     while True:
         try:
-            async with aiohttp.ClientSession() as session:
-                url = f"{API}/volumes?t={int(time.time())}"
-                async with session.get(url, ssl=ssl_context) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        net = data.get('net', 0)
-                        deposit = data.get('deposit', 0)
-                        withdraw = data.get('withdraw', 0)
-                        
-                        logger.debug(f"netflow check: net={net:.2f} BTC")
-                        
-                        abs_net = abs(net)
-                        if abs_net >= NET_ALERT_THRESHOLD:
-                            current_time = time.time()
-                            current_sign = 'positive' if net > 0 else 'negative'
-                            
-                            # Условия отправки:
-                            # 1) прошло больше cooldown с последнего алерта ИЛИ
-                            # 2) знак потока изменился (с положительного на отрицательный и наоборот)
-                            time_condition = (current_time - last_alert_time) > NET_ALERT_COOLDOWN
-                            sign_changed = (last_alert_sign is not None and last_alert_sign != current_sign)
-                            
-                            if time_condition or sign_changed:
-                                # Формируем сообщение
-                                emoji = "🔴" if net < 0 else "🟢"
-                                direction = "приток на биржи (давление вниз)" if net < 0 else "отток с бирж (накопление)"
-                                
-                                msg = (
-                                    f"{emoji} <b>Чистый поток за последний час</b>\n"
-                                    f"💰 <b>{abs_net:.2f} BTC</b> {direction}\n\n"
-                                    f"📥 DEPOSIT: {deposit:.2f} BTC\n"
-                                    f"📤 WITHDRAW: {withdraw:.2f} BTC\n"
-                                    f"📊 NET: {net:+.2f} BTC"
-                                )
-                                
-                                for cid in list(subscribers):
-                                    try:
-                                        await bot.send_message(cid, msg)
-                                        logger.info(f"Netflow alert sent to {cid}: net={net:.2f}")
-                                    except Exception as e:
-                                        logger.error(f"Send error for {cid}: {e}")
-                                        subscribers.discard(cid)
-                                
-                                last_alert_time = current_time
-                                last_alert_net = net
-                                last_alert_sign = current_sign
-                        else:
-                            # Если net ниже порога, сбрасываем информацию о знаке? Можно не сбрасывать,
-                            # но при следующем превышении с тем же знаком может сработать cooldown.
-                            # Лучше не сбрасывать, чтобы не спамить при повторных превышениях.
-                            pass
-                    else:
-                        logger.warning(f"Volumes endpoint returned {resp.status}")
+            now = int(time.time())
+            since = now - 3600  # последний час
+
+            conn = None
+            try:
+                conn = get_db()
+                c = conn.cursor()
+
+                # Сумма DEPOSIT за последний час
+                c.execute("""
+                    SELECT COALESCE(SUM(btc), 0) as total
+                    FROM whale_classification
+                    WHERE time > ? AND flow_type = 'DEPOSIT'
+                """, (since,))
+                deposit = c.fetchone()["total"]
+
+                # Сумма WITHDRAW за последний час
+                c.execute("""
+                    SELECT COALESCE(SUM(btc), 0) as total
+                    FROM whale_classification
+                    WHERE time > ? AND flow_type = 'WITHDRAW'
+                """, (since,))
+                withdraw = c.fetchone()["total"]
+
+                net = withdraw - deposit
+                logger.debug(f"netflow check: net={net:.2f} BTC")
+
+                abs_net = abs(net)
+                if abs_net >= NET_ALERT_THRESHOLD:
+                    current_time = time.time()
+                    current_sign = 'positive' if net > 0 else 'negative'
+
+                    time_condition = (current_time - last_alert_time) > NET_ALERT_COOLDOWN
+                    sign_changed = (last_alert_sign is not None and last_alert_sign != current_sign)
+
+                    if time_condition or sign_changed:
+                        emoji = "🔴" if net < 0 else "🟢"
+                        direction = "приток на биржи (давление вниз)" if net < 0 else "отток с бирж (накопление)"
+
+                        msg = (
+                            f"{emoji} <b>Чистый поток за последний час</b>\n"
+                            f"💰 <b>{abs_net:.2f} BTC</b> {direction}\n\n"
+                            f"📥 DEPOSIT: {deposit:.2f} BTC\n"
+                            f"📤 WITHDRAW: {withdraw:.2f} BTC\n"
+                            f"📊 NET: {net:+.2f} BTC"
+                        )
+
+                        for cid in list(subscribers):
+                            try:
+                                await bot.send_message(cid, msg)
+                                logger.info(f"Netflow alert sent to {cid}: net={net:.2f}")
+                            except Exception as e:
+                                logger.error(f"Send error for {cid}: {e}")
+                                subscribers.discard(cid)
+
+                        last_alert_time = current_time
+                        last_alert_sign = current_sign
+
+            except Exception as e:
+                logger.exception(f"Database error in netflow_alert_monitor: {e}")
+            finally:
+                if conn:
+                    conn.close()
+
         except Exception as e:
             logger.exception(f"Error in netflow_alert_monitor: {e}")
-        
-        await asyncio.sleep(NET_ALERT_INTERVAL)
 
+        await asyncio.sleep(NET_ALERT_INTERVAL)
 # ==============================================
 # Trade Monitor
 # ==============================================
