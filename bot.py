@@ -28,6 +28,10 @@ WEBAPP_URL = Config.WEBAPP_URL
 MIN_WHALE_BTC = Config.MIN_WHALE_BTC
 ALERT_WHALE_BTC = Config.ALERT_WHALE_BTC
 
+NET_ALERT_THRESHOLD = 500          # порог в BTC, при превышении которого шлём алерт
+NET_ALERT_INTERVAL = 1800           # проверка раз в 30 минут (1800 секунд)
+NET_ALERT_COOLDOWN = 3600           # минимальное время между повторными алертами (1 час)
+
 # ==============================================
 # Bot init
 # ==============================================
@@ -105,7 +109,7 @@ async def check_candles_api():
         return False, None
         
 # ==============================================
-# SSE Listener
+# SSE Listeners
 # ==============================================
 async def whale_listener():
     await asyncio.sleep(2)
@@ -207,6 +211,75 @@ async def whale_listener():
 
     except asyncio.CancelledError:
         logger.info("whale_listener stopped gracefully")
+
+async def netflow_alert_monitor():
+    """Мониторит чистый поток (withdraw - deposit) за последний час и шлёт алерты при значительных отклонениях."""
+    await asyncio.sleep(10)  # небольшая задержка при старте
+    logger.info("Starting netflow alert monitor")
+    
+    last_alert_net = None
+    last_alert_time = 0
+    last_alert_sign = None  # 'positive' or 'negative'
+    
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"{API}/volumes?t={int(time.time())}"
+                async with session.get(url, ssl=ssl_context) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        net = data.get('net', 0)
+                        deposit = data.get('deposit', 0)
+                        withdraw = data.get('withdraw', 0)
+                        
+                        logger.debug(f"netflow check: net={net:.2f} BTC")
+                        
+                        abs_net = abs(net)
+                        if abs_net >= NET_ALERT_THRESHOLD:
+                            current_time = time.time()
+                            current_sign = 'positive' if net > 0 else 'negative'
+                            
+                            # Условия отправки:
+                            # 1) прошло больше cooldown с последнего алерта ИЛИ
+                            # 2) знак потока изменился (с положительного на отрицательный и наоборот)
+                            time_condition = (current_time - last_alert_time) > NET_ALERT_COOLDOWN
+                            sign_changed = (last_alert_sign is not None and last_alert_sign != current_sign)
+                            
+                            if time_condition or sign_changed:
+                                # Формируем сообщение
+                                emoji = "🔴" if net < 0 else "🟢"
+                                direction = "приток на биржи (давление вниз)" if net < 0 else "отток с бирж (накопление)"
+                                
+                                msg = (
+                                    f"{emoji} <b>Чистый поток за последний час</b>\n"
+                                    f"💰 <b>{abs_net:.2f} BTC</b> {direction}\n\n"
+                                    f"📥 DEPOSIT: {deposit:.2f} BTC\n"
+                                    f"📤 WITHDRAW: {withdraw:.2f} BTC\n"
+                                    f"📊 NET: {net:+.2f} BTC"
+                                )
+                                
+                                for cid in list(subscribers):
+                                    try:
+                                        await bot.send_message(cid, msg)
+                                        logger.info(f"Netflow alert sent to {cid}: net={net:.2f}")
+                                    except Exception as e:
+                                        logger.error(f"Send error for {cid}: {e}")
+                                        subscribers.discard(cid)
+                                
+                                last_alert_time = current_time
+                                last_alert_net = net
+                                last_alert_sign = current_sign
+                        else:
+                            # Если net ниже порога, сбрасываем информацию о знаке? Можно не сбрасывать,
+                            # но при следующем превышении с тем же знаком может сработать cooldown.
+                            # Лучше не сбрасывать, чтобы не спамить при повторных превышениях.
+                            pass
+                    else:
+                        logger.warning(f"Volumes endpoint returned {resp.status}")
+        except Exception as e:
+            logger.exception(f"Error in netflow_alert_monitor: {e}")
+        
+        await asyncio.sleep(NET_ALERT_INTERVAL)
 
 # ==============================================
 # Trade Monitor
@@ -435,8 +508,7 @@ async def trade_monitor():
                 logger.error(f"Auto mode error: {e}")
 
         await asyncio.sleep(5)
-
-      
+ 
 # ==============================================
 # Hearbeat
 # ==============================================
@@ -493,18 +565,21 @@ async def bot_heartbeat():
 async def main():
     listener_task = asyncio.create_task(whale_listener())
     heartbeat_task = asyncio.create_task(bot_heartbeat())
-    print("BOT DB PATH:", Config.DB_PATH)
     monitor_task = asyncio.create_task(trade_monitor())
+    netflow_task = asyncio.create_task(netflow_alert_monitor())   # <-- добавить
+    
+    print("BOT DB PATH:", Config.DB_PATH)
     logger.info("Polling starting...")
     try:
         await dp.start_polling(bot)
     finally:
         listener_task.cancel()
+        netflow_task.cancel()   # и здесь отменить
         try:
             await listener_task
+            await netflow_task
         except asyncio.CancelledError:
             pass
-
-
+        
 if __name__ == "__main__":
     asyncio.run(main())
