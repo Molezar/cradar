@@ -33,20 +33,24 @@ class BaseStrategy:
             return None
     
         raw_score = aggregated["raw_score"]
+        total_score = aggregated["score"]          # уже умноженный на 100
+    
         logger.info(f"MIN_THRESHOLD: {self.min_threshold}")
         logger.info(f"RAW SCORE: {raw_score}")
-        logger.info(f"ABS RAW SCORE: {abs(raw_score)} | THRESHOLD: {self.min_threshold}")
+        logger.info(f"TOTAL SCORE: {total_score}")
+        logger.info(f"ABS TOTAL SCORE: {abs(total_score)} | THRESHOLD: {self.min_threshold}")
     
-        # Решение о прохождении порога принимаем по raw_score
-        if abs(raw_score) < self.min_threshold:
-            logger.info("Raw score below threshold → FLAT")
+        # Решение о прохождении порога принимаем по TOTAL_SCORE (как было изначально)
+        if abs(total_score) < self.min_threshold:
+            logger.info("Total score below threshold → FLAT")
             return None
     
         # Передаём max_leverage для динамического расчета
         trade_data = build_trade(aggregated, price, base_leverage=self.max_leverage)
     
-        # Добавляем информацию о сыром скоре и пороге
+        # Добавляем информацию о сыром скоре, пороге и полном скоре
         trade_data["raw_score"] = raw_score
+        trade_data["total_score"] = total_score
         trade_data["threshold"] = self.min_threshold
     
         return trade_data

@@ -256,11 +256,11 @@ async def handle_signal(callback: types.CallbackQuery):
             await callback.message.answer("⚖️ Сейчас нет чёткого сигнала. Рынок во флэте.")
             return
 
-        # Если дошли сюда - значит result это словарь с данными нового сигнала
         # внутри блока, где result – словарь с новым сигналом
         raw_score = result['raw_score']
+        total_score = result['total_score']
         threshold = result['threshold']
-        above_below = "ВЫШЕ" if abs(raw_score) >= threshold else "НИЖЕ"
+        above_below = "ВЫШЕ" if abs(total_score) >= threshold else "НИЖЕ"   # сравниваем total_score с порогом
         
         text = (
             f"📊 <b>Баланс:</b> {result['balance']:.2f} USDT\n\n"
@@ -271,7 +271,8 @@ async def handle_signal(callback: types.CallbackQuery):
             f"📈 Плечо: {result['leverage']}x\n"
             f"💰 Размер позиции: {result['position_size']:.6f} BTC\n"
             f"⚠ Риск: {RISK_PER_TRADE*100:.0f}%\n\n"
-            f"📊 Сила сигнала: {abs(raw_score):.3f} (порог {threshold:.3f}) – {above_below} порога"
+            f"📊 Сырой сигнал: {raw_score:.3f}\n"
+            f"📊 Сила сигнала: {abs(total_score):.1f} (порог {threshold:.3f}) – {above_below} порога"
         )
 
         await callback.message.edit_text(
@@ -463,7 +464,8 @@ async def generate_and_save_signal():
     leverage = trade_data["leverage"]
     raw_score = trade_data["raw_score"]
     threshold = trade_data["threshold"]
-
+    total_score = trade_data["total_score"]
+    
     balance = get_demo_balance()
     position_size = calculate_position_size(balance, entry, stop)
 
@@ -478,5 +480,6 @@ async def generate_and_save_signal():
         "position_size": position_size,
         "balance": balance,
         "raw_score": raw_score,
-        "threshold": threshold
+        "threshold": threshold,
+        "total_score": total_score
     }
