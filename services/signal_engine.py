@@ -85,7 +85,7 @@ def aggregate_signals(signals):
         logger.info("No trend signals → returning None")
         return None
 
-    # --- TREND SCORE (среднее, чтобы не раздувать если 2 индикатора) ---
+    # --- TREND SCORE (среднее) ---
     trend_score = sum(s.score() for s in trend_signals) / len(trend_signals)
     logger.info(f"Trend score: {trend_score}")
 
@@ -97,35 +97,32 @@ def aggregate_signals(signals):
     adx_score = adx_signal.confidence if adx_signal else 0
     logger.info(f"ADX score: {adx_score}")
 
-    # --- БАЗОВЫЙ ЗНАКОВЫЙ СИГНАЛ (только trend и rsi) ---
+    # --- БАЗОВЫЙ ЗНАКОВЫЙ СИГНАЛ ---
     base_score = trend_score * 0.6 + rsi_score * 0.2
     logger.info(f"Base score (trend + rsi): {base_score}")
-    
+
     # --- МНОЖИТЕЛЬ УВЕРЕННОСТИ от ADX и волатильности ---
     volatility = vol_signal.meta.get("volatility") if vol_signal else 0
     logger.info(f"Volatility: {volatility}")
     volatility_multiplier = min(volatility / 100, 2)  # от 0 до 2
-    
-    adx_confidence = adx_score if adx_signal else 0  # уже от 0 до 1
+
+    adx_confidence = adx_score if adx_signal else 0
     logger.info(f"ADX confidence: {adx_confidence}")
-    
-    # Комбинированный множитель (например, 1 + adx_confidence, умноженный на volatility)
-    # Можно настроить формулу под свои предпочтения
+
     confidence_multiplier = (1 + adx_confidence) * volatility_multiplier
     logger.info(f"Confidence multiplier: {confidence_multiplier}")
-    
-    # Итоговый score с сохранением знака base_score
+
+    # --- СЫРОЙ SCORE (до умножения на 100) ---
     if base_score == 0:
-        total_score = 0
+        raw_score = 0
     else:
-        total_score = math.copysign(abs(base_score) * confidence_multiplier, base_score)
-    
-    # Масштабируем (опционально, можно оставить *100 как было)
-    total_score *= 100
-    
+        raw_score = math.copysign(abs(base_score) * confidence_multiplier, base_score)
+
+    # --- ИТОГОВЫЙ SCORE (умноженный на 100 для удобства восприятия) ---
+    total_score = raw_score * 100
+
+    logger.info(f"Raw score: {raw_score}")
     logger.info(f"Final total_score after multiplier: {total_score}")
-    
-    logger.info(f"Final total_score: {total_score}")
 
     if total_score > 0:
         direction = "LONG"
@@ -139,7 +136,8 @@ def aggregate_signals(signals):
 
     return {
         "direction": direction,
-        "score": total_score,
+        "score": total_score,      # для совместимости
+        "raw_score": raw_score,    # новое поле
         "signals": signals,
         "volatility": volatility
     }

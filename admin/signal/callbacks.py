@@ -257,6 +257,11 @@ async def handle_signal(callback: types.CallbackQuery):
             return
 
         # Если дошли сюда - значит result это словарь с данными нового сигнала
+        # внутри блока, где result – словарь с новым сигналом
+        raw_score = result['raw_score']
+        threshold = result['threshold']
+        above_below = "ВЫШЕ" if abs(raw_score) >= threshold else "НИЖЕ"
+        
         text = (
             f"📊 <b>Баланс:</b> {result['balance']:.2f} USDT\n\n"
             f"🎯 <b>Рекомендация:</b> {result['direction']}\n"
@@ -265,7 +270,8 @@ async def handle_signal(callback: types.CallbackQuery):
             f"🎯 Take: {result['take']}\n"
             f"📈 Плечо: {result['leverage']}x\n"
             f"💰 Размер позиции: {result['position_size']:.6f} BTC\n"
-            f"⚠ Риск: {RISK_PER_TRADE*100:.0f}%"
+            f"⚠ Риск: {RISK_PER_TRADE*100:.0f}%\n\n"
+            f"📊 Сила сигнала: {abs(raw_score):.3f} (порог {threshold:.3f}) – {above_below} порога"
         )
 
         await callback.message.edit_text(
@@ -439,18 +445,24 @@ async def reset_stats(callback: types.CallbackQuery):
     finally:
         if conn:
             conn.close()
- 
+
 async def generate_and_save_signal():
     if has_open_trade():
         return "already_open"
 
     strategy = AggressiveStrategy()
-    result = await strategy.generate_signal()
+    trade_data = await strategy.generate_signal()
 
-    if result is None:
+    if trade_data is None:
         return None
 
-    direction, entry, stop, take, leverage = result
+    direction = trade_data["direction"]
+    entry = trade_data["entry"]
+    stop = trade_data["stop"]
+    take = trade_data["take"]
+    leverage = trade_data["leverage"]
+    raw_score = trade_data["raw_score"]
+    threshold = trade_data["threshold"]
 
     balance = get_demo_balance()
     position_size = calculate_position_size(balance, entry, stop)
@@ -464,5 +476,7 @@ async def generate_and_save_signal():
         "take": take,
         "leverage": leverage,
         "position_size": position_size,
-        "balance": balance
+        "balance": balance,
+        "raw_score": raw_score,
+        "threshold": threshold
     }
