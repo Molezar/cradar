@@ -34,7 +34,8 @@ def resolve_cluster(address, cursor):
         FROM cluster_addresses
         WHERE address=?
     """, (address,)).fetchone()
-
+    if r:
+        logger.debug(f"[CLUSTER] {address[:8]} -> {r['cluster_id']}")
     if not r:
         return None, 0
 
@@ -203,7 +204,7 @@ async def mempool_ws_worker():
 
                     try:
                         data = json.loads(raw)
-                    except:
+                    except Exception:
                         continue
 
                     txs = data.get("mempool-transactions", {}).get("added", [])
@@ -228,8 +229,16 @@ async def mempool_ws_worker():
                         outputs = get_output_map(tx)
                         total = sum(outputs.values())
 
+                        logger.info(
+                            f"[TX] {txid} inputs={len(inputs)} outputs={len(outputs)} total={total:.2f}"
+                        )
+
+                        # фильтр whale
                         if total < MIN_WHALE_BTC:
+                            logger.debug(f"[TX] Skip small tx {txid} {total:.2f} BTC")
                             continue
+
+                        logger.info(f"[TX] Whale candidate {txid} {total:.2f} BTC")
 
                         store_tx_io(txid, inputs, outputs)
 
@@ -245,15 +254,26 @@ async def mempool_ws_worker():
                                 if not cid:
                                     update_address_seen(addr, c)
 
+                            logger.info(f"[FLOW] Classifying {txid}")
                             flows = classify_flow(inputs, outputs, c)
 
-                            # вставляем whale_tx ОДИН раз
+                            if not flows:
+                                logger.warning(f"[FLOW] No exchange clusters detected for {txid}")
+
+                            logger.info(f"[FLOW] Result {txid}: {flows}")
+
+                            # вставляем whale_tx
                             c.execute("""
                                 INSERT OR IGNORE INTO whale_tx(txid, btc, time)
                                 VALUES (?,?,?)
                             """, (txid, total, now))
 
                             for from_c, to_c, flow_type, flow_btc in flows:
+
+                                logger.info(
+                                    f"[FLOW] Insert {txid} {flow_type} {flow_btc:.2f} "
+                                    f"from={from_c} to={to_c}"
+                                )
 
                                 c.execute("""
                                     INSERT OR IGNORE INTO whale_classification
@@ -262,6 +282,7 @@ async def mempool_ws_worker():
                                 """, (txid, flow_btc, now, from_c, to_c, flow_type))
 
                                 if flow_btc >= ALERT_WHALE_BTC:
+
                                     c.execute("""
                                         INSERT INTO alert_tx
                                         (txid, btc, time, flow_type, from_cluster, to_cluster)
@@ -277,7 +298,10 @@ async def mempool_ws_worker():
                                         "time": now
                                     }
 
-                                    logger.info(f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}")
+                                    logger.info(
+                                        f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}"
+                                    )
+
                                     _events.put(event)
 
                             conn.commit()
