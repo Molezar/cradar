@@ -37,7 +37,7 @@ def detect_change_addresses(cursor, txids, cluster_id, now):
     placeholders = ",".join("?" * len(txids))
 
     rows = cursor.execute(f"""
-        SELECT o.txid, o.address, o.value
+        SELECT o.txid, o.address, o.btc
         FROM tx_outputs o
         WHERE o.txid IN ({placeholders})
     """, txids).fetchall()
@@ -45,7 +45,7 @@ def detect_change_addresses(cursor, txids, cluster_id, now):
     tx_outputs = defaultdict(list)
 
     for r in rows:
-        tx_outputs[r["txid"]].append((r["address"], r["value"]))
+        tx_outputs[r["txid"]].append((r["address"], r["btc"]))
 
     learned = 0
 
@@ -172,6 +172,10 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
     since = now - (LOOKBACK_DAYS * 24 * 3600)
 
     txids = get_recent_exchange_txs(cursor, since, cluster_id)
+
+    if not txids:
+        return
+    
     now = int(time.time())
 
     # change detection
@@ -183,8 +187,6 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
     
     if multi_learned:
         logger.info(f"[CLUSTER] {name} learned {multi_learned} multi-input addresses")
-    if not txids:
-        return
 
     # 1️⃣ Собираем адреса всех tx_outputs сразу
     placeholders = ",".join("?" * len(txids))

@@ -131,48 +131,48 @@ def classify_flow(inputs, outputs, cursor):
 
     in_exchange = {}
     out_exchange = {}
+    unknown_inputs = {}
+    unknown_outputs = {}
 
     for addr, btc in inputs.items():
         cid, _ = resolve_cluster(addr, cursor)
         if cid:
-            row = cursor.execute(
-                "SELECT cluster_type FROM clusters WHERE id=?",
-                (cid,)
-            ).fetchone()
-
+            row = cursor.execute("SELECT cluster_type FROM clusters WHERE id=?", (cid,)).fetchone()
             if row and row["cluster_type"] == "EXCHANGE":
                 in_exchange[cid] = in_exchange.get(cid, 0) + btc
+        else:
+            unknown_inputs[addr] = btc   # ← сюда
 
     for addr, btc in outputs.items():
         cid, _ = resolve_cluster(addr, cursor)
         if cid:
-            row = cursor.execute(
-                "SELECT cluster_type FROM clusters WHERE id=?",
-                (cid,)
-            ).fetchone()
-
+            row = cursor.execute("SELECT cluster_type FROM clusters WHERE id=?", (cid,)).fetchone()
             if row and row["cluster_type"] == "EXCHANGE":
                 out_exchange[cid] = out_exchange.get(cid, 0) + btc
+        else:
+            unknown_outputs[addr] = btc  # ← сюда
 
     flows = []
 
-    total_in = sum(inputs.values())
-    total_out = sum(outputs.values())
+    # 1️⃣ Withdraw: known exchange → unknown
+    for cid, vol in in_exchange.items():
+        if unknown_outputs:
+            for addr in unknown_outputs:
+                flows.append((cid, addr, "WITHDRAW", vol))
 
-    if in_exchange and not out_exchange:
-        for cid, vol in in_exchange.items():
-            flows.append((cid, None, "WITHDRAW", vol))
+    # 2️⃣ Deposit: unknown → known exchange
+    for cid, vol in out_exchange.items():
+        if unknown_inputs:
+            for addr in unknown_inputs:
+                flows.append((addr, cid, "DEPOSIT", vol))
 
-    elif out_exchange and not in_exchange:
-        for cid, vol in out_exchange.items():
-            flows.append((None, cid, "DEPOSIT", vol))
-
-    elif in_exchange and out_exchange:
-        for cid, vol in in_exchange.items():
-            flows.append((cid, None, "INTERNAL", vol))
+    # 3️⃣ Internal: known exchange → known exchange
+    for cid_in, vol in in_exchange.items():
+        for cid_out in out_exchange:
+            flows.append((cid_in, cid_out, "INTERNAL", vol))
 
     return flows
-
+    
 # ==============================================
 # WebSocket Worker
 # ==============================================
@@ -221,39 +221,78 @@ async def mempool_ws_worker():
 
                         _seen_txids.add(txid)
 
-                        # защита от роста памяти
                         if len(_seen_txids) > 200_000:
                             _seen_txids.clear()
 
                         inputs = get_input_map(tx)
                         outputs = get_output_map(tx)
+
                         logger.info(f"[DEBUG] raw outputs: {tx.get('vout')}")
+
                         total = sum(outputs.values())
 
                         logger.info(
-                            f"[TX] {txid} inputs={len(inputs)} outputs={len(outputs)} total={total:.2f}"
+                            f"[TX] {txid} inputs={len(inputs)} outputs={len(outputs)} total={total:.6f}"
                         )
 
-                        # фильтр whale
                         if total < MIN_WHALE_BTC:
-                            logger.debug(f"[TX] Skip small tx {txid} {total:.2f} BTC")
+                            logger.debug(f"[TX] Skip small tx {txid} {total:.6f} BTC")
                             continue
 
-                        logger.info(f"[TX] Whale candidate {txid} {total:.2f} BTC")
+                        logger.info(f"[TX] Whale candidate {txid} {total:.6f} BTC")
 
                         store_tx_io(txid, inputs, outputs)
 
-                        # --- DB WRITE BLOCK ---
                         conn = None
                         try:
                             conn = get_db()
                             c = conn.cursor()
 
-                            # Кластеризация
-                            for addr in list(inputs.keys()) + list(outputs.keys()):
+                            # ---------------------------------
+                            # CLUSTER INPUT ADDRESSES TOGETHER
+                            # ---------------------------------
+
+                            input_addrs = list(inputs.keys())
+
+                            if input_addrs:
+
+                                cluster_ids = []
+                                for addr in input_addrs:
+                                    cid, _ = resolve_cluster(addr, c)
+                                    if cid:
+                                        cluster_ids.append(cid)
+
+                                if cluster_ids:
+                                    base_cluster = cluster_ids[0]
+                                else:
+                                    base_cluster = create_behavioral_cluster(input_addrs[0], c)
+
+                                for addr in input_addrs:
+                                    existing, _ = resolve_cluster(addr, c)
+
+                                    if not existing:
+                                        c.execute("""
+                                            INSERT INTO cluster_addresses
+                                            (address, cluster_id, confidence, first_seen, last_seen)
+                                            VALUES (?, ?, 0.6, ?, ?)
+                                        """, (addr, base_cluster, now, now))
+                                    else:
+                                        update_address_seen(addr, c)
+
+                            # ---------------------------------
+                            # ENSURE OUTPUT ADDRESSES EXIST
+                            # ---------------------------------
+
+                            for addr in outputs.keys():
+
                                 cid, _ = resolve_cluster(addr, c)
-                                if not cid:
+
+                                if cid:
                                     update_address_seen(addr, c)
+
+                            # ---------------------------------
+                            # FLOW CLASSIFICATION
+                            # ---------------------------------
 
                             logger.info(f"[FLOW] Classifying {txid}")
                             flows = classify_flow(inputs, outputs, c)
@@ -263,7 +302,10 @@ async def mempool_ws_worker():
 
                             logger.info(f"[FLOW] Result {txid}: {flows}")
 
-                            # вставляем whale_tx
+                            # ---------------------------------
+                            # INSERT WHALE TX
+                            # ---------------------------------
+
                             c.execute("""
                                 INSERT OR IGNORE INTO whale_tx(txid, btc, time)
                                 VALUES (?,?,?)
@@ -313,7 +355,6 @@ async def mempool_ws_worker():
                         finally:
                             if conn:
                                 conn.close()
-                        # --- END DB BLOCK ---
 
         except Exception as e:
             logger.error(f"[MEMPOOL] WS error: {e}")
