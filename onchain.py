@@ -227,6 +227,7 @@ async def mempool_ws_worker():
 
                         inputs = get_input_map(tx)
                         outputs = get_output_map(tx)
+                        logger.info(f"[DEBUG] raw outputs: {tx.get('vout')}")
                         total = sum(outputs.values())
 
                         logger.info(
