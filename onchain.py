@@ -127,36 +127,50 @@ def store_tx_io(txid, inputs_map, outputs_map):
 # ==============================================
 
 def classify_flow(inputs, outputs, cursor):
-    """
-    Возвращает список потоков (from_cluster, to_cluster, flow_type, btc)
-    """
-    in_clusters = {}
-    out_clusters = {}
+
+    in_exchange = {}
+    out_exchange = {}
 
     for addr, btc in inputs.items():
         cid, _ = resolve_cluster(addr, cursor)
         if cid:
-            in_clusters[cid] = in_clusters.get(cid, 0) + btc
+            row = cursor.execute(
+                "SELECT cluster_type FROM clusters WHERE id=?",
+                (cid,)
+            ).fetchone()
+
+            if row and row["cluster_type"] == "EXCHANGE":
+                in_exchange[cid] = in_exchange.get(cid, 0) + btc
 
     for addr, btc in outputs.items():
         cid, _ = resolve_cluster(addr, cursor)
         if cid:
-            out_clusters[cid] = out_clusters.get(cid, 0) + btc
+            row = cursor.execute(
+                "SELECT cluster_type FROM clusters WHERE id=?",
+                (cid,)
+            ).fetchone()
+
+            if row and row["cluster_type"] == "EXCHANGE":
+                out_exchange[cid] = out_exchange.get(cid, 0) + btc
 
     flows = []
 
-    for cid in set(in_clusters.keys()) | set(out_clusters.keys()):
-        in_vol = in_clusters.get(cid, 0)
-        out_vol = out_clusters.get(cid, 0)
-        net = in_vol - out_vol
+    total_in = sum(inputs.values())
+    total_out = sum(outputs.values())
 
-        if net > 0:
-            flows.append((None, cid, "WITHDRAW", net))
-        elif net < 0:
-            flows.append((cid, None, "DEPOSIT", -net))
+    if in_exchange and not out_exchange:
+        for cid, vol in in_exchange.items():
+            flows.append((cid, None, "WITHDRAW", vol))
+
+    elif out_exchange and not in_exchange:
+        for cid, vol in out_exchange.items():
+            flows.append((None, cid, "DEPOSIT", vol))
+
+    elif in_exchange and out_exchange:
+        for cid, vol in in_exchange.items():
+            flows.append((cid, None, "INTERNAL", vol))
 
     return flows
-
 
 # ==============================================
 # WebSocket Worker
@@ -229,8 +243,6 @@ async def mempool_ws_worker():
                             for addr in list(inputs.keys()) + list(outputs.keys()):
                                 cid, _ = resolve_cluster(addr, c)
                                 if not cid:
-                                    create_behavioral_cluster(addr, c)
-                                else:
                                     update_address_seen(addr, c)
 
                             flows = classify_flow(inputs, outputs, c)
