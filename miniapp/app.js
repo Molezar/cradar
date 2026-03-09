@@ -1,71 +1,65 @@
+// app.js
 let lastPrice = null;
-
 const ALERT_WHALE_BTC = window.ALERT_WHALE_BTC || 1000;
 
+// --- Utility Functions ---
 function fmtTime(ts) {
     const d = new Date(ts * 1000);
-    return d.toLocaleTimeString();
+    return d.toLocaleTimeString("en-US", { hour12: false });
+}
+
+function flowArrow(flow) {
+    return { DEPOSIT: "→", WITHDRAW: "←", INTERNAL: "↔" }[flow] || "•";
 }
 
 function flowLabel(flow) {
-    switch(flow) {
-        case "DEPOSIT": return `<span class="flow deposit">DEPOSIT</span>`;
-        case "WITHDRAW": return `<span class="flow withdraw">WITHDRAW</span>`;
-        case "INTERNAL": return `<span class="flow internal">INTERNAL</span>`;
-        case "POSSIBLE_EXCHANGE_WITHDRAW": return `<span class="flow exchange">EXCH. WITHDRAW</span>`;
-        case "POSSIBLE_EXCHANGE_DEPOSIT": return `<span class="flow exchange">EXCH. DEPOSIT</span>`;
-        case "ALERT_WHALE_BTC": return `<span class="flow alert">🐋 WHALE ALERT</span>`;
-        case "UNKNOWN": return `<span class="flow unknown">UNKNOWN</span>`;
-        default: return `<span class="flow other">${flow}</span>`;
-    }
+    const labels = {
+        DEPOSIT: "DEPOSIT",
+        WITHDRAW: "WITHDRAW",
+        INTERNAL: "INTERNAL",
+        POSSIBLE_EXCHANGE_WITHDRAW: "EXCH. WITHDRAW",
+        POSSIBLE_EXCHANGE_DEPOSIT: "EXCH. DEPOSIT",
+        UNKNOWN: "UNKNOWN"
+    };
+    const cls = flow.toLowerCase();
+    return `<span class="flow ${cls}">${labels[flow] || flow}</span>`;
 }
 
+// --- Main Load Function ---
 async function load() {
     try {
-        const wr = await fetch("/whales?t=" + Date.now());
-        const wj = await wr.json();
+        // Fetch all API data in parallel
+        const [wj, pj, pcj, volj] = await Promise.all([
+            fetch("/whales?t=" + Date.now()).then(r => r.json()),
+            fetch("/prediction?t=" + Date.now()).then(r => r.json()),
+            fetch("/price?t=" + Date.now()).then(r => r.json()),
+            fetch("/volumes?t=" + Date.now()).then(r => r.json())
+        ]);
 
-        const pr = await fetch("/prediction?t=" + Date.now());
-        const pj = await pr.json();
-
-        const prc = await fetch("/price?t=" + Date.now());
-        const pcj = await prc.json();
-
-        const vol = await fetch("/volumes?t=" + Date.now());
-        const volj = await vol.json();
-
+        // --- Whales List ---
         let out = "";
-
         if (wj.whales && Array.isArray(wj.whales)) {
             for (const x of wj.whales) {
-                const btc = Number(x.btc || 0);
-                const conf = Number(x.confidence || 0);
-                const isHuge = btc >= ALERT_WHALE_BTC;
-                const cls = isHuge ? "whale huge" : "whale";
+                const btc = Number(x.btc);
+                if (isNaN(btc) || btc <= 0) continue;
 
-                let dirArrow = "";
-                switch(x.flow_type) {
-                    case "DEPOSIT": dirArrow = "→"; break;
-                    case "WITHDRAW": dirArrow = "←"; break;
-                    case "INTERNAL": dirArrow = "↔"; break;
-                    default: dirArrow = "•"; break;
-                }
+                const conf = Number(x.confidence) || 0;
+                const cls = btc >= ALERT_WHALE_BTC ? "whale huge" : "whale";
 
                 const confText = conf ? `<span class="confidence">(${(conf*100).toFixed(0)}%)</span>` : "";
 
-                out += `
-                    <div class="${cls}">
-                        ${fmtTime(x.time)} &nbsp;
-                        ${btc.toFixed(2)} BTC
-                        ${dirArrow}
-                        ${flowLabel(x.flow_type)}
-                        ${confText}
-                    </div>
-                `;
+                out += `<div class="${cls}">
+                    ${fmtTime(x.time)} &nbsp;
+                    ${btc.toFixed(2)} BTC
+                    ${flowArrow(x.flow_type)}
+                    ${flowLabel(x.flow_type)}
+                    ${confText}
+                </div>`;
             }
         }
+        document.getElementById("list").innerHTML = out;
 
-        // BTC price
+        // --- BTC Price ---
         if (pcj.price) {
             lastPrice = pcj.price;
             document.getElementById("info").innerText = `BTC $${Number(pcj.price).toFixed(0)}`;
@@ -73,36 +67,29 @@ async function load() {
             document.getElementById("info").innerText = "BTC price…";
         }
 
-        // AI Market Forecast
-        let pred = "<br><div class='pred'>=== AI MARKET FORECAST ===</div>";
+        // --- AI Market Forecast ---
+        let pred = "<div class='pred'>=== AI MARKET FORECAST ===</div>";
         for (const horizon in pj) {
             const row = pj[horizon];
             if (!row) continue;
 
-            const pct = Number(row.pct || 0);
-            const target = Number(row.target || 0);
+            const pct = Number(row.pct) || 0;
+            const target = Number(row.target) || 0;
             const dir = pct > 0 ? "⬆" : pct < 0 ? "⬇" : "→";
+            const minutes = Number(horizon) / 60;
 
-            pred += `
-                <div>
-                    ${horizon / 60} min ${dir}
-                    ${pct.toFixed(2)}%
-                    → $${target.toFixed(0)}
-                </div>
-            `;
+            pred += `<div>${minutes} min ${dir} ${pct.toFixed(2)}% → $${target.toFixed(0)}</div>`;
         }
         document.getElementById("forecast").innerHTML = pred;
 
-        // Volumes
+        // --- Volumes ---
         let volHtml = "<div class='volumes'><div class='pred'>=== 1H VOLUMES ===</div>";
         volHtml += `<div>DEPOSIT: <span class='flow deposit'>${volj.deposit.toFixed(2)} BTC</span></div>`;
         volHtml += `<div>WITHDRAW: <span class='flow withdraw'>${volj.withdraw.toFixed(2)} BTC</span></div>`;
-        let netColor = volj.net >= 0 ? "positive" : "negative";
+        const netColor = volj.net >= 0 ? "positive" : "negative";
         volHtml += `<div>NET (W-D): <span class='net ${netColor}'>${volj.net.toFixed(2)} BTC</span></div>`;
         volHtml += "</div>";
         document.getElementById("volumes").innerHTML = volHtml;
-
-        document.getElementById("list").innerHTML = out;
 
     } catch (e) {
         document.getElementById("info").innerText = "API error";
@@ -110,6 +97,6 @@ async function load() {
     }
 }
 
-// INIT
+// --- INIT ---
 load();
 setInterval(load, 5000);

@@ -293,7 +293,7 @@ async def netflow_alert_monitor():
 async def trade_monitor():
     await asyncio.sleep(5)
     logger.info("🚀 Trade monitor starting with enhanced price fallback...")
-    
+
     # Статистика для мониторинга
     last_valid_price = 0
     price_failures = 0
@@ -303,23 +303,21 @@ async def trade_monitor():
         closed_any_trade = False
 
         try:
-            # Пытаемся получить цену с принудительным обновлением если долго нет данных
+            # ----------------------
+            # 1️⃣ Получаем цену
+            # ----------------------
             price = await get_current_price(force_refresh=(price_failures > 3))
-            
             current_time = time.time()
-            
-            # Логируем цену каждые 60 секунд
+
             if current_time - last_price_log > 60:
                 if price > 0:
                     logger.info(f"📊 Current price: {price}")
                     last_price_log = current_time
                 else:
                     logger.warning(f"⚠️ No valid price available (failure #{price_failures})")
-            
+
             if price <= 0:
                 price_failures += 1
-                
-                # Если долго нет цены, используем последнюю известную из кэша
                 if price_failures > 3 and last_valid_price > 0:
                     logger.warning(f"Using last known price: {last_valid_price} (after {price_failures} failures)")
                     price = last_valid_price
@@ -327,191 +325,150 @@ async def trade_monitor():
                     await asyncio.sleep(5)
                     continue
             else:
-                # Сброс счетчика ошибок и обновление последней цены
                 price_failures = 0
                 last_valid_price = price
 
-            # =============================
-            # 1️⃣ READ OPEN TRADES
-            # =============================
+            # ----------------------
+            # 2️⃣ Открываем соединение один раз
+            # ----------------------
             conn = None
             try:
                 conn = get_db()
                 c = conn.cursor()
+
+                # Получаем все открытые сделки
                 c.execute("SELECT * FROM trade_signals WHERE status='OPEN'")
                 trades = c.fetchall()
-                
                 if trades:
                     logger.info(f"Found {len(trades)} open trades, current price: {price}")
+
+                # ----------------------
+                # 3️⃣ Обработка каждой сделки
+                # ----------------------
+                for trade in trades:
+                    direction = trade["direction"]
+                    entry = trade["entry"]
+                    stop = trade["stop"]
+                    take = trade["take"]
+                    position_size = trade["position_size"]
+                    trade_id = trade["id"]
+
+                    exit_price = None
+                    status = None
+
+                    # LONG
+                    if direction == "LONG":
+                        if price >= take:
+                            exit_price = take
+                            status = "TP"
+                            logger.info(f"🎯 LONG TP triggered: price={price:.2f} >= take={take:.2f}")
+                        elif price <= stop:
+                            exit_price = stop
+                            status = "SL"
+                            logger.info(f"🛑 LONG SL triggered: price={price:.2f} <= stop={stop:.2f}")
+
+                    # SHORT
+                    elif direction == "SHORT":
+                        if price <= take:
+                            exit_price = take
+                            status = "TP"
+                            logger.info(f"🎯 SHORT TP triggered: price={price:.2f} <= take={take:.2f}")
+                        elif price >= stop:
+                            exit_price = stop
+                            status = "SL"
+                            logger.info(f"🛑 SHORT SL triggered: price={price:.2f} >= stop={stop:.2f}")
+
+                    if exit_price is None:
+                        continue
+
+                    # ----- PnL Calculation -----
+                    pnl = (exit_price - entry) * position_size if direction == "LONG" else (entry - exit_price) * position_size
+
+                    # ----- CLOSE TRADE (ATOMIC) -----
+                    try:
+                        c.execute("""
+                            UPDATE trade_signals
+                            SET status=?, result=?
+                            WHERE id=? AND status='OPEN'
+                        """, (status, pnl, trade_id))
+
+                        if c.rowcount == 0:
+                            logger.warning(f"Trade {trade_id} was already closed")
+                            conn.rollback()
+                            continue
+
+                        # Обновляем баланс
+                        c.execute("""
+                            UPDATE demo_account
+                            SET balance = balance + ?, updated_at=?
+                            WHERE id=1
+                        """, (pnl, int(time.time())))
+
+                        conn.commit()
+                        closed_any_trade = True
+                        logger.info(f"✅ Trade {trade_id} closed: {status} with PnL {pnl:+.2f} USDT")
+                    except Exception as e:
+                        logger.error(f"Error closing trade {trade_id}: {e}")
+                        conn.rollback()
+                        continue
+
+                    # ----- SEND NOTIFICATION -----
+                    percent = (pnl / (entry * position_size) * 100) if entry * position_size != 0 else 0
+                    emoji = "🟢" if pnl > 0 else "🔴"
+                    stats = calculate_system_stats()
+                    msg = (
+                        f"{emoji} <b>Сделка закрыта ({status})</b>\n\n"
+                        f"📌 Направление: <b>{direction}</b>\n"
+                        f"💰 Entry: <b>{entry:.2f}</b>\n"
+                        f"💵 Exit: <b>{exit_price:.2f}</b>\n"
+                        f"📦 Размер: <b>{position_size:.6f} BTC</b>\n\n"
+                        f"💎 PnL: <b>{pnl:+.2f} USDT</b>\n"
+                        f"📊 Доходность: <b>{percent:+.2f}%</b>\n"
+                        f"💼 Баланс: <b>{stats['balance']:.2f} USDT</b>\n\n"
+                        f"━━━━━━━━━━━━━━\n"
+                        f"📊 <b>System Stats</b>\n"
+                        f"Всего сделок: {stats['total_trades']}\n"
+                        f"TP: {stats['wins']} | SL: {stats['losses']}\n"
+                        f"Winrate: {stats['winrate']}%\n"
+                        f"💰 Total PnL: {stats['total_pnl']:+.2f} USDT"
+                    )
+                    for cid in list(subscribers):
+                        try:
+                            await bot.send_message(cid, msg)
+                        except:
+                            subscribers.discard(cid)
+
+                # ----------------------
+                # 4️⃣ AUTO MODE
+                # ----------------------
+                if get_auto_mode() and closed_any_trade and subscribers:
+                    c.execute("SELECT COUNT(*) as cnt FROM trade_signals WHERE status='OPEN'")
+                    open_count = c.fetchone()["cnt"]
+
+                    if open_count == 0:
+                        logger.info("Auto mode: generating new signal...")
+                        result = await generate_and_save_signal()
+                        if isinstance(result, dict):
+                            text = (
+                                f"🤖 <b>AUTO SIGNAL</b>\n\n"
+                                f"🎯 {result['direction']}\n"
+                                f"📍 Entry: {result['entry']:.2f}\n"
+                                f"🛑 Stop: {result['stop']:.2f}\n"
+                                f"🎯 Take: {result['take']:.2f}\n"
+                                f"💰 Size: {result['position_size']:.6f} BTC"
+                            )
+                            for cid in list(subscribers):
+                                try:
+                                    await bot.send_message(cid, text)
+                                except:
+                                    subscribers.discard(cid)
+
             finally:
                 if conn:
                     conn.close()
 
-            # =============================
-            # 2️⃣ PROCESS TRADES
-            # =============================
-            for trade in trades:
-                direction = trade["direction"]
-                entry = trade["entry"]
-                stop = trade["stop"]
-                take = trade["take"]
-                position_size = trade["position_size"]
-                trade_id = trade["id"]
-
-                exit_price = None
-                status = None
-
-                # ----- LONG -----
-                if direction == "LONG":
-                    if price >= take:
-                        exit_price = take
-                        status = "TP"
-                        logger.info(f"🎯 LONG TP triggered: price={price:.2f} >= take={take:.2f}")
-                    elif price <= stop:
-                        exit_price = stop
-                        status = "SL"
-                        logger.info(f"🛑 LONG SL triggered: price={price:.2f} <= stop={stop:.2f}")
-
-                # ----- SHORT -----
-                elif direction == "SHORT":
-                    if price <= take:
-                        exit_price = take
-                        status = "TP"
-                        logger.info(f"🎯 SHORT TP triggered: price={price:.2f} <= take={take:.2f}")
-                    elif price >= stop:
-                        exit_price = stop
-                        status = "SL"
-                        logger.info(f"🛑 SHORT SL triggered: price={price:.2f} >= stop={stop:.2f}")
-
-                if exit_price is None:
-                    continue
-
-                # ----- PnL Calculation -----
-                if direction == "LONG":
-                    pnl = (exit_price - entry) * position_size
-                else:
-                    pnl = (entry - exit_price) * position_size
-
-                # =============================
-                # 3️⃣ CLOSE TRADE (ATOMIC)
-                # =============================
-                conn = None
-                try:
-                    conn = get_db()
-                    c = conn.cursor()
-
-                    # Проверяем, что сделка все еще открыта
-                    c.execute("""
-                        UPDATE trade_signals
-                        SET status=?, result=?
-                        WHERE id=? AND status='OPEN'
-                    """, (status, pnl, trade_id))
-
-                    if c.rowcount == 0:
-                        logger.warning(f"Trade {trade_id} was already closed")
-                        conn.rollback()
-                        continue
-
-                    # Обновляем баланс
-                    c.execute("""
-                        UPDATE demo_account
-                        SET balance = balance + ?,
-                            updated_at=?
-                        WHERE id=1
-                    """, (pnl, int(time.time())))
-
-                    conn.commit()
-                    closed_any_trade = True
-                    
-                    logger.info(f"✅ Trade {trade_id} closed: {status} with PnL {pnl:+.2f} USDT")
-
-                except Exception as e:
-                    logger.error(f"Error closing trade {trade_id}: {e}")
-                    if conn:
-                        conn.rollback()
-                    continue
-                finally:
-                    if conn:
-                        conn.close()
-
-                # =============================
-                # 4️⃣ SEND NOTIFICATION
-                # =============================
-                percent = (
-                    (pnl / (entry * position_size)) * 100
-                    if entry * position_size != 0 else 0
-                )
-
-                emoji = "🟢" if pnl > 0 else "🔴"
-
-                stats = calculate_system_stats()
-
-                msg = (
-                    f"{emoji} <b>Сделка закрыта ({status})</b>\n\n"
-                    f"📌 Направление: <b>{direction}</b>\n"
-                    f"💰 Entry: <b>{entry:.2f}</b>\n"
-                    f"💵 Exit: <b>{exit_price:.2f}</b>\n"
-                    f"📦 Размер: <b>{position_size:.6f} BTC</b>\n\n"
-                    f"💎 PnL: <b>{pnl:+.2f} USDT</b>\n"
-                    f"📊 Доходность: <b>{percent:+.2f}%</b>\n"
-                    f"💼 Баланс: <b>{stats['balance']:.2f} USDT</b>\n\n"
-                    f"━━━━━━━━━━━━━━\n"
-                    f"📊 <b>System Stats</b>\n"
-                    f"Всего сделок: {stats['total_trades']}\n"
-                    f"TP: {stats['wins']} | SL: {stats['losses']}\n"
-                    f"Winrate: {stats['winrate']}%\n"
-                    f"💰 Total PnL: {stats['total_pnl']:+.2f} USDT"
-                )
-
-                for cid in list(subscribers):
-                    try:
-                        await bot.send_message(cid, msg)
-                        logger.info(f"Closed trade notification sent to {cid}")
-                    except Exception as e:
-                        logger.error(f"Send error for {cid}: {e}")
-                        subscribers.discard(cid)
-
         except Exception as e:
             logger.exception(f"Critical error in trade monitor: {e}")
-
-        # =============================
-        # 5️⃣ AUTO MODE (SAFE)
-        # =============================
-        if get_auto_mode() and closed_any_trade and subscribers:
-            try:
-                conn = None
-                try:
-                    conn = get_db()
-                    c = conn.cursor()
-                    c.execute("SELECT COUNT(*) as cnt FROM trade_signals WHERE status='OPEN'")
-                    open_count = c.fetchone()["cnt"]
-                finally:
-                    if conn:
-                        conn.close()
-
-                if open_count == 0:
-                    logger.info("Auto mode: generating new signal...")
-                    result = await generate_and_save_signal()
-                    
-                    if isinstance(result, dict):
-                        text = (
-                            f"🤖 <b>AUTO SIGNAL</b>\n\n"
-                            f"🎯 {result['direction']}\n"
-                            f"📍 Entry: {result['entry']:.2f}\n"
-                            f"🛑 Stop: {result['stop']:.2f}\n"
-                            f"🎯 Take: {result['take']:.2f}\n"
-                            f"💰 Size: {result['position_size']:.6f} BTC"
-                        )
-                    
-                        for cid in list(subscribers):
-                            try:
-                                await bot.send_message(cid, text)
-                                logger.info(f"Auto signal sent to {cid}")
-                            except Exception as e:
-                                logger.error(f"Auto signal send error: {e}")
-                                subscribers.discard(cid)
-            except Exception as e:
-                logger.error(f"Auto mode error: {e}")
 
         await asyncio.sleep(5)
  
