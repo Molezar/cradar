@@ -8,13 +8,16 @@ function fmtTime(ts) {
 }
 
 function flowLabel(flow) {
-    if (flow === "DEPOSIT")
-        return `<span class="flow deposit">DEPOSIT</span>`;
-    if (flow === "WITHDRAW")
-        return `<span class="flow withdraw">WITHDRAW</span>`;
-    if (flow === "INTERNAL")
-        return `<span class="flow internal">INTERNAL</span>`;
-    return "";
+    switch(flow) {
+        case "DEPOSIT": return `<span class="flow deposit">DEPOSIT</span>`;
+        case "WITHDRAW": return `<span class="flow withdraw">WITHDRAW</span>`;
+        case "INTERNAL": return `<span class="flow internal">INTERNAL</span>`;
+        case "POSSIBLE_EXCHANGE_WITHDRAW": return `<span class="flow exchange">EXCH. WITHDRAW</span>`;
+        case "POSSIBLE_EXCHANGE_DEPOSIT": return `<span class="flow exchange">EXCH. DEPOSIT</span>`;
+        case "ALERT_WHALE_BTC": return `<span class="flow alert">🐋 WHALE ALERT</span>`;
+        case "UNKNOWN": return `<span class="flow unknown">UNKNOWN</span>`;
+        default: return `<span class="flow other">${flow}</span>`;
+    }
 }
 
 async function load() {
@@ -28,50 +31,50 @@ async function load() {
         const prc = await fetch("/price?t=" + Date.now());
         const pcj = await prc.json();
 
-        // ===== НОВЫЙ ЗАПРОС =====
         const vol = await fetch("/volumes?t=" + Date.now());
         const volj = await vol.json();
-        // =========================
 
         let out = "";
 
         if (wj.whales && Array.isArray(wj.whales)) {
             for (const x of wj.whales) {
-                const t = fmtTime(x.time);
                 const btc = Number(x.btc || 0);
                 const conf = Number(x.confidence || 0);
                 const isHuge = btc >= ALERT_WHALE_BTC;
                 const cls = isHuge ? "whale huge" : "whale";
 
                 let dirArrow = "";
-                if (x.flow_type === "DEPOSIT") dirArrow = "→";
-                else if (x.flow_type === "WITHDRAW") dirArrow = "←";
-                else if (x.flow_type === "INTERNAL") dirArrow = "↔";
+                switch(x.flow_type) {
+                    case "DEPOSIT": dirArrow = "→"; break;
+                    case "WITHDRAW": dirArrow = "←"; break;
+                    case "INTERNAL": dirArrow = "↔"; break;
+                    default: dirArrow = "•"; break;
+                }
 
-                const flowText = flowLabel(x.flow_type);
+                const confText = conf ? `<span class="confidence">(${(conf*100).toFixed(0)}%)</span>` : "";
 
                 out += `
                     <div class="${cls}">
-                        ${t} &nbsp;
+                        ${fmtTime(x.time)} &nbsp;
                         ${btc.toFixed(2)} BTC
                         ${dirArrow}
-                        ${flowText}
-                        <span class="confidence">(${(conf*100).toFixed(0)}%)</span>
+                        ${flowLabel(x.flow_type)}
+                        ${confText}
                     </div>
                 `;
             }
         }
 
+        // BTC price
         if (pcj.price) {
             lastPrice = pcj.price;
-            document.getElementById("info").innerText =
-                `BTC $${Number(pcj.price).toFixed(0)}`;
+            document.getElementById("info").innerText = `BTC $${Number(pcj.price).toFixed(0)}`;
         } else {
             document.getElementById("info").innerText = "BTC price…";
         }
 
+        // AI Market Forecast
         let pred = "<br><div class='pred'>=== AI MARKET FORECAST ===</div>";
-
         for (const horizon in pj) {
             const row = pj[horizon];
             if (!row) continue;
@@ -88,10 +91,9 @@ async function load() {
                 </div>
             `;
         }
-
         document.getElementById("forecast").innerHTML = pred;
 
-        // ===== ОТРИСОВКА VOLUMES =====
+        // Volumes
         let volHtml = "<div class='volumes'><div class='pred'>=== 1H VOLUMES ===</div>";
         volHtml += `<div>DEPOSIT: <span class='flow deposit'>${volj.deposit.toFixed(2)} BTC</span></div>`;
         volHtml += `<div>WITHDRAW: <span class='flow withdraw'>${volj.withdraw.toFixed(2)} BTC</span></div>`;
@@ -99,7 +101,6 @@ async function load() {
         volHtml += `<div>NET (W-D): <span class='net ${netColor}'>${volj.net.toFixed(2)} BTC</span></div>`;
         volHtml += "</div>";
         document.getElementById("volumes").innerHTML = volHtml;
-        // ==============================
 
         document.getElementById("list").innerHTML = out;
 
@@ -108,7 +109,6 @@ async function load() {
         console.error(e);
     }
 }
-
 
 // INIT
 load();

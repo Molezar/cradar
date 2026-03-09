@@ -60,15 +60,34 @@ h1 {
 }
 
 .flow.deposit {
-    color: #ff3b3b; /* красный */
+    color: #ff3b3b;
 }
 
 .flow.withdraw {
-    color: #00ff66; /* зелёный */
+    color: #00ff66;
 }
 
 .flow.internal {
-    color: #ffd700; /* жёлтый */
+    color: #ffd700;
+}
+
+.flow.exchange {
+    color: #ff66ff;
+}
+
+.flow.alert {
+    color: #ff8c00;
+}
+
+.flow.other {
+    color: #999;
+}
+
+/* Confidence */
+.confidence {
+    color: #aaa;
+    font-size: 12px;
+    margin-left: 4px;
 }
 
 /* Алерты */
@@ -85,11 +104,18 @@ h1 {
     font-weight: bold;
 }
 
+/* Volumes */
 .volumes {
     margin: 15px 0;
     padding: 8px;
     background: #1a1a1a;
     border-radius: 4px;
+}
+
+.volumes .pred {
+    color: #ff9900;
+    font-weight: bold;
+    margin-bottom: 6px;
 }
 
 .volumes div {
