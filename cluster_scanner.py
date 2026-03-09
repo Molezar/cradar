@@ -9,6 +9,7 @@ logger = get_logger(__name__)
 
 MEMPOOL_API = "https://mempool.space/api/address"
 SCAN_LIMIT = 25
+RETRY_DELAY_429 = 5  # секунд паузы при 429
 
 
 def scan_exchange_anchors():
@@ -35,10 +36,23 @@ def scan_exchange_anchors():
 
         try:
             url = f"{MEMPOOL_API}/{addr}/txs"
-            resp = requests.get(url, timeout=10)
+
+            while True:
+                resp = requests.get(url, timeout=10)
+
+                if resp.status_code == 200:
+                    break
+                elif resp.status_code == 429:
+                    logger.warning(f"[ANCHOR_SCAN] {addr} returned 429 (rate limit), sleeping {RETRY_DELAY_429}s")
+                    time.sleep(RETRY_DELAY_429)
+                elif resp.status_code == 400:
+                    logger.warning(f"[ANCHOR_SCAN] {addr} returned 400, response: {resp.text}")
+                    break
+                else:
+                    logger.warning(f"[ANCHOR_SCAN] {addr} returned status {resp.status_code}, skipping")
+                    break
 
             if resp.status_code != 200:
-                logger.warning(f"[ANCHOR_SCAN] {addr} returned status {resp.status_code}")
                 continue
 
             txs = resp.json()[:SCAN_LIMIT]
