@@ -3,6 +3,7 @@ import time
 import json
 import asyncio
 import queue
+from collections import deque
 import websockets
 
 from database.database import get_db
@@ -17,7 +18,7 @@ SATOSHI = 100_000_000
 MEMPOOL_WS = "wss://mempool.emzy.de/api/v1/ws"
 
 _events = queue.Queue()
-_seen_txids = set()
+_seen_txids = deque(maxlen=100_000)
 
 
 def get_event_queue():
@@ -28,17 +29,20 @@ def get_event_queue():
 # Cluster resolution
 # ==============================================
 
-def resolve_cluster(address, cursor):
+def resolve_cluster(address, cursor, cache=None):
+    if cache is not None and address in cache:
+        return cache[address]
+
     r = cursor.execute("""
         SELECT cluster_id, confidence
         FROM cluster_addresses
         WHERE address=?
     """, (address,)).fetchone()
 
-    if not r:
-        return None, 0
-
-    return r["cluster_id"], r["confidence"]
+    result = (r["cluster_id"], r["confidence"]) if r else (None, 0)
+    if cache is not None:
+        cache[address] = result
+    return result
 
 
 def update_address_seen(address, cursor):
@@ -49,23 +53,21 @@ def update_address_seen(address, cursor):
     """, (int(time.time()), address))
 
 
-def create_behavioral_cluster(address, cursor):
+def create_behavioral_cluster(address, cursor, cache=None):
     now = int(time.time())
-
     cursor.execute("""
         INSERT INTO clusters
         (cluster_type, confidence, size, created_at, last_updated)
         VALUES ('BEHAVIORAL', 0.4, 1, ?, ?)
     """, (now, now))
-
     cluster_id = cursor.lastrowid
-
     cursor.execute("""
         INSERT OR IGNORE INTO cluster_addresses
         (address, cluster_id, confidence, first_seen, last_seen)
         VALUES (?, ?, 0.4, ?, ?)
     """, (address, cluster_id, now, now))
-
+    if cache is not None:
+        cache[address] = (cluster_id, 0.4)
     return cluster_id
 
 
@@ -94,67 +96,40 @@ def get_output_map(tx):
     return m
 
 
-def store_tx_io(txid, inputs_map, outputs_map):
-    conn = get_db()
-    c = conn.cursor()
-
-    input_rows = [
-        (txid, addr, btc)
-        for addr, btc in inputs_map.items()
-    ]
-
-    output_rows = [
-        (txid, addr, btc)
-        for addr, btc in outputs_map.items()
-    ]
-
-    c.executemany("""
+def store_tx_io(txid, inputs_map, outputs_map, cursor):
+    input_rows = [(txid, addr, btc) for addr, btc in inputs_map.items()]
+    output_rows = [(txid, addr, btc) for addr, btc in outputs_map.items()]
+    cursor.executemany("""
         INSERT OR IGNORE INTO tx_inputs (txid, address, btc)
         VALUES (?, ?, ?)
     """, input_rows)
-
-    c.executemany("""
+    cursor.executemany("""
         INSERT OR IGNORE INTO tx_outputs (txid, address, btc)
         VALUES (?, ?, ?)
     """, output_rows)
 
-    conn.commit()
-    conn.close()
 
 # ==============================================
 # Behavioral -> Exchange upgrade
 # ==============================================
 
 def behavioral_to_exchange(cluster_id, cursor, now):
-    """
-    Проверяем, соответствует ли BEHAVIORAL кластер паттерну EXCHANGE.
-    Условия примера:
-    - Много multi-input транзакций (>3 за последние 30 дней)
-    - Sweep-транзакции (много выходов)
-    - Крупные суммы (сумма tx > 20 BTC)
-    """
-    from collections import defaultdict
-
     lookback = now - (30 * 24 * 3600)
     rows = cursor.execute("""
         SELECT txid
         FROM whale_classification
         WHERE time > ? AND (from_cluster=? OR to_cluster=?)
     """, (lookback, cluster_id, cluster_id)).fetchall()
-
     if not rows:
         return False
 
     txids = [r["txid"] for r in rows]
-
     multi_input_count = 0
     sweep_count = 0
-
     for txid in txids:
         inputs = cursor.execute("SELECT address FROM tx_inputs WHERE txid=?", (txid,)).fetchall()
         if len(inputs) > 1:
             multi_input_count += 1
-
         outputs = cursor.execute("SELECT address FROM tx_outputs WHERE txid=?", (txid,)).fetchall()
         if len(outputs) > 2:
             sweep_count += 1
@@ -169,22 +144,23 @@ def behavioral_to_exchange(cluster_id, cursor, now):
         """, (now, cluster_id))
         logger.info(f"[CLUSTER] Behavioral cluster {cluster_id} upgraded to EXCHANGE")
         return True
-
     return False
+
 
 # ==============================================
 # Flow classification
 # ==============================================
 
-def classify_flow(inputs, outputs, cursor):
-
+def classify_flow(inputs, outputs, cursor, cache=None):
     in_exchange = {}
     out_exchange = {}
     unknown_inputs = {}
     unknown_outputs = {}
 
+    cluster_cache = cache if cache is not None else {}
+
     for addr, btc in inputs.items():
-        cid, _ = resolve_cluster(addr, cursor)
+        cid, _ = resolve_cluster(addr, cursor, cluster_cache)
         if cid:
             row = cursor.execute("SELECT cluster_type FROM clusters WHERE id=?", (cid,)).fetchone()
             if row and row["cluster_type"] == "EXCHANGE":
@@ -193,7 +169,9 @@ def classify_flow(inputs, outputs, cursor):
             unknown_inputs[addr] = btc
 
     for addr, btc in outputs.items():
-        cid, _ = resolve_cluster(addr, cursor)
+        cid = cluster_cache.get(addr)
+        if not cid:
+            cid, _ = resolve_cluster(addr, cursor, cluster_cache)
         if cid:
             row = cursor.execute("SELECT cluster_type FROM clusters WHERE id=?", (cid,)).fetchone()
             if row and row["cluster_type"] == "EXCHANGE":
@@ -206,28 +184,19 @@ def classify_flow(inputs, outputs, cursor):
     for cid, vol in in_exchange.items():
         if unknown_outputs:
             flows.append((cid, None, "WITHDRAW", vol))
-
     for cid, vol in out_exchange.items():
         if unknown_inputs:
             flows.append((None, cid, "DEPOSIT", vol))
-
     for cid_in, vol in in_exchange.items():
         for cid_out in out_exchange:
             flows.append((cid_in, cid_out, "INTERNAL", vol))
-
     return flows
 
-def heuristic_flow_classification(inputs, outputs, total_btc):
-    """
-    Улучшенная эвристика:
-    - 1 вход → много выходов + крупная сумма → POSSIBLE_EXCHANGE_WITHDRAW
-    """
-    flows = []
 
+def heuristic_flow_classification(inputs, outputs, total_btc):
+    flows = []
     num_in = len(inputs)
     num_out = len(outputs)
-
-    # Threshold для подозрительных биржевых транзакций
     LARGE_TX_THRESHOLD = 10  # BTC
 
     if num_in == 1 and num_out > 1 and total_btc >= LARGE_TX_THRESHOLD:
@@ -238,165 +207,142 @@ def heuristic_flow_classification(inputs, outputs, total_btc):
         flows.append((None, None, "INTERNAL", total_btc))
     else:
         flows.append((None, None, "TRANSFER", total_btc))
-
     return flows
+
+
+# ==============================================
+# TX processing
+# ==============================================
+
+def process_tx(tx, cursor, cluster_cache):
+    txid = tx.get("txid")
+    if not txid or txid in _seen_txids:
+        return
+
+    _seen_txids.append(txid)
+
+    inputs = get_input_map(tx)
+    outputs = get_output_map(tx)
+    total = sum(outputs.values())
+
+    if total < MIN_WHALE_BTC:
+        return
+
+    store_tx_io(txid, inputs, outputs, cursor)
+
+    now = int(time.time())
+    input_addrs = list(inputs.keys())
+    addr_to_cluster = {}
+
+    for addr in input_addrs:
+        cid, _ = resolve_cluster(addr, cursor, cluster_cache)
+        addr_to_cluster[addr] = cid
+
+    if input_addrs and len(input_addrs) >= 2 and total >= 20:
+        cluster_ids = [cid for cid in addr_to_cluster.values() if cid]
+        if cluster_ids:
+            base_cluster = min(cluster_ids)
+        else:
+            base_cluster = create_behavioral_cluster(input_addrs[0], cursor, cluster_cache)
+
+        for addr in input_addrs:
+            cid = addr_to_cluster[addr]
+            if not cid:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO cluster_addresses
+                    (address, cluster_id, confidence, first_seen, last_seen)
+                    VALUES (?, ?, 0.6, ?, ?)
+                """, (addr, base_cluster, now, now))
+                addr_to_cluster[addr] = base_cluster
+                cluster_cache[addr] = (base_cluster, 0.6)
+            else:
+                update_address_seen(addr, cursor)
+
+        cluster_ids_set = set(addr_to_cluster.values())
+        for cid in cluster_ids_set:
+            row = cursor.execute("SELECT cluster_type FROM clusters WHERE id=?", (cid,)).fetchone()
+            if row and row["cluster_type"] == "BEHAVIORAL":
+                behavioral_to_exchange(cid, cursor, now)
+
+    for addr in outputs.keys():
+        cid, _ = resolve_cluster(addr, cursor, cluster_cache)
+        if cid:
+            update_address_seen(addr, cursor)
+
+    flows = classify_flow(inputs, outputs, cursor, cluster_cache)
+    if all(f[2] == "UNCLASSIFIED" for f in flows):
+        flows = heuristic_flow_classification(inputs, outputs, total)
+    if not flows:
+        flows = [(None, None, "UNCLASSIFIED", total)]
+
+    cursor.execute("""
+        INSERT OR IGNORE INTO whale_tx(txid, btc, time)
+        VALUES (?,?,?)
+    """, (txid, total, now))
+
+    if len(inputs) == 1 and len(outputs) == 1:
+        confidence = 0.9
+    elif len(inputs) > 1 or len(outputs) > 2:
+        confidence = 0.6
+    else:
+        confidence = 0.7
+
+    for from_c, to_c, flow_type, flow_btc in flows:
+        cursor.execute("""
+            INSERT OR IGNORE INTO whale_classification
+            (txid, btc, time, from_cluster, to_cluster, flow_type, confidence)
+            VALUES (?,?,?,?,?,?,?)
+        """, (txid, flow_btc, now, from_c, to_c, flow_type, confidence))
+
+        if flow_btc >= ALERT_WHALE_BTC:
+            event = {
+                "txid": txid,
+                "btc": round(flow_btc, 4),
+                "flow_type": flow_type,
+                "from_cluster": from_c,
+                "to_cluster": to_c,
+                "confidence": confidence,
+                "time": now
+            }
+            _events.put(event)
+            logger.info(f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}")
+
 
 # ==============================================
 # WebSocket Worker
 # ==============================================
 
 async def mempool_ws_worker():
-
     while True:
         last_log = 0
-
         try:
             logger.info("[MEMPOOL] Connecting via WebSocket...")
-
-            async with websockets.connect(
-                MEMPOOL_WS,
-                ping_interval=20,
-                ping_timeout=10,
-                max_size=None
-            ) as ws:
-
+            async with websockets.connect(MEMPOOL_WS, ping_interval=20, ping_timeout=10, max_size=None) as ws:
                 await ws.send(json.dumps({"track-mempool": True}))
                 logger.info("[MEMPOOL] Subscribed to mempool")
 
-                async for raw in ws:
+                cluster_cache_session = {}  # <-- глобальный кэш для текущей WS-сессии
 
-                    now_ts = time.time()
-                    if now_ts - last_log > 120:
-                        logger.info(f"[MEMPOOL] Alive. Seen txids: {len(_seen_txids)}")
-                        last_log = now_ts
+                with get_db() as conn:
+                    c = conn.cursor()
+                    async for raw in ws:
+                        now_ts = time.time()
+                        if now_ts - last_log > 120:
+                            logger.info(f"[MEMPOOL] Alive. Seen txids: {len(_seen_txids)}")
+                            last_log = now_ts
 
-                    try:
-                        data = json.loads(raw)
-                    except Exception:
-                        continue
-
-                    txs = data.get("mempool-transactions", {}).get("added", [])
-                    if not txs:
-                        continue
-
-                    now = int(time.time())
-
-                    for tx in txs:
-
-                        txid = tx.get("txid")
-                        if not txid or txid in _seen_txids:
-                            continue
-
-                        _seen_txids.add(txid)
-
-                        if len(_seen_txids) > 100_000:
-                            _seen_txids.clear()
-
-                        inputs = get_input_map(tx)
-                        outputs = get_output_map(tx)
-
-                        total = sum(outputs.values())
-                        if len(inputs) == 1 and len(outputs) == 1:
-                            confidence = 0.9
-                        elif len(inputs) > 1 or len(outputs) > 2:
-                            confidence = 0.6
-                        else:
-                            confidence = 0.7
-
-                        if total < MIN_WHALE_BTC:
-                            continue
-
-                        logger.info(f"[TX] Whale candidate {txid} {total:.6f} BTC")
-
-                        store_tx_io(txid, inputs, outputs)
-
-                        conn = None
                         try:
-                            conn = get_db()
-                            c = conn.cursor()
+                            data = json.loads(raw)
+                        except Exception:
+                            continue
 
-                            input_addrs = list(inputs.keys())
-                            addr_to_cluster = {}
+                        txs = data.get("mempool-transactions", {}).get("added", [])
+                        if not txs:
+                            continue
 
-                            for addr in input_addrs:
-                                cid, _ = resolve_cluster(addr, c)
-                                addr_to_cluster[addr] = cid
-
-                            if input_addrs and len(input_addrs) >= 2 and total >= 20:
-                                cluster_ids = [cid for cid in addr_to_cluster.values() if cid]
-                                if cluster_ids:
-                                    base_cluster = min(cluster_ids)
-                                else:
-                                    base_cluster = create_behavioral_cluster(input_addrs[0], c)
-
-                                for addr in input_addrs:
-                                    cid = addr_to_cluster[addr]
-                                    if not cid:
-                                        c.execute("""
-                                            INSERT OR IGNORE INTO cluster_addresses
-                                            (address, cluster_id, confidence, first_seen, last_seen)
-                                            VALUES (?, ?, 0.6, ?, ?)
-                                        """, (addr, base_cluster, now, now))
-                                        addr_to_cluster[addr] = base_cluster
-                                    else:
-                                        update_address_seen(addr, c)
-
-                                cluster_ids_set = set(addr_to_cluster.values())
-                                for cid in cluster_ids_set:
-                                    row = c.execute("SELECT cluster_type FROM clusters WHERE id=?", (cid,)).fetchone()
-                                    if row and row["cluster_type"] == "BEHAVIORAL":
-                                        behavioral_to_exchange(cid, c, now)
-
-                            for addr in outputs.keys():
-                                cid, _ = resolve_cluster(addr, c)
-                                if cid:
-                                    update_address_seen(addr, c)
-
-                            logger.info(f"[FLOW] Classifying {txid}")
-                            flows = classify_flow(inputs, outputs, c)
-                            if all(f[2] == "UNCLASSIFIED" for f in flows):
-                                flows = heuristic_flow_classification(inputs, outputs, total)
-
-                            if not flows:
-                                logger.warning(f"[FLOW] No exchange clusters detected for {txid}, marking UNCLASSIFIED")
-                                flows = [(None, None, "UNCLASSIFIED", total)]
-
-                            logger.info(f"[FLOW] Result {txid}: {flows}")
-
-                            c.execute("""
-                                INSERT OR IGNORE INTO whale_tx(txid, btc, time)
-                                VALUES (?,?,?)
-                            """, (txid, total, now))
-
-                            for from_c, to_c, flow_type, flow_btc in flows:
-                                logger.info(f"[FLOW] Insert {txid} {flow_type} {flow_btc:.2f} from={from_c} to={to_c}")
-                                c.execute("""
-                                    INSERT OR IGNORE INTO whale_classification
-                                    (txid, btc, time, from_cluster, to_cluster, flow_type, confidence)
-                                    VALUES (?,?,?,?,?,?,?)
-                                """, (txid, flow_btc, now, from_c, to_c, flow_type, confidence))
-
-                                if flow_btc >= ALERT_WHALE_BTC:
-                                    event = {
-                                        "txid": txid,
-                                        "btc": round(flow_btc, 4),
-                                        "flow_type": flow_type,
-                                        "from_cluster": from_c,
-                                        "to_cluster": to_c,
-                                        "confidence": confidence,
-                                        "time": now
-                                    }
-                                    logger.info(f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}")
-                                    _events.put(event)
-
-                            conn.commit()
-
-                        except Exception as db_error:
-                            logger.error(f"[MEMPOOL][DB] {db_error}")
-
-                        finally:
-                            if conn:
-                                conn.close()
+                        for tx in txs:
+                            process_tx(tx, c, cluster_cache_session)
+                    conn.commit()
 
         except Exception as e:
             logger.error(f"[MEMPOOL] WS error: {e}")
