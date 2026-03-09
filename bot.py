@@ -150,6 +150,7 @@ async def whale_listener():
                                     logger.info(f"[BOT] Received event {tx.get('txid')}")
                                     btc = float(tx.get("btc", 0))
                                     flow = tx.get("flow") or "UNKNOWN"
+                                    confidence = float(tx.get("confidence", 0.7))
                                     from_cluster = tx.get("from_cluster")
                                     to_cluster = tx.get("to_cluster")
 
@@ -190,6 +191,7 @@ async def whale_listener():
                                     msg = (
                                         f"{emoji} <b>{title}</b>\n"
                                         f"{size}: <b>{btc:.2f} BTC</b>\n"
+                                        f"Confidence: <b>{confidence*100:.0f}%</b>\n"
                                         f"{direction}\n"
                                         f"<code>{txid[:16]}…</code>"
                                     )

@@ -157,14 +157,12 @@ def classify_flow(inputs, outputs, cursor):
     # 1️⃣ Withdraw: known exchange → unknown
     for cid, vol in in_exchange.items():
         if unknown_outputs:
-            for addr in unknown_outputs:
-                flows.append((cid, addr, "WITHDRAW", vol))
+            flows.append((cid, None, "WITHDRAW", vol))
 
     # 2️⃣ Deposit: unknown → known exchange
     for cid, vol in out_exchange.items():
         if unknown_inputs:
-            for addr in unknown_inputs:
-                flows.append((addr, cid, "DEPOSIT", vol))
+            flows.append((None, cid, "DEPOSIT", vol))
 
     # 3️⃣ Internal: known exchange → known exchange
     for cid_in, vol in in_exchange.items():
@@ -230,6 +228,13 @@ async def mempool_ws_worker():
                         logger.info(f"[DEBUG] raw outputs: {tx.get('vout')}")
 
                         total = sum(outputs.values())
+                        # heuristic confidence
+                        if len(inputs) == 1 and len(outputs) == 1:
+                            confidence = 0.9  # likely whale transfer
+                        elif len(inputs) > 1 or len(outputs) > 2:
+                            confidence = 0.6  # likely exchange sweep
+                        else:
+                            confidence = 0.7  # default
 
                         logger.info(
                             f"[TX] {txid} inputs={len(inputs)} outputs={len(outputs)} total={total:.6f}"
@@ -297,8 +302,15 @@ async def mempool_ws_worker():
                             logger.info(f"[FLOW] Classifying {txid}")
                             flows = classify_flow(inputs, outputs, c)
 
+                            # 🔴 ВАЖНОЕ ИСПРАВЛЕНИЕ
                             if not flows:
-                                logger.warning(f"[FLOW] No exchange clusters detected for {txid}")
+                                logger.warning(
+                                    f"[FLOW] No exchange clusters detected for {txid}, marking UNCLASSIFIED"
+                                )
+
+                                flows = [
+                                    (None, None, "UNCLASSIFIED", total)
+                                ]
 
                             logger.info(f"[FLOW] Result {txid}: {flows}")
 
@@ -320,9 +332,9 @@ async def mempool_ws_worker():
 
                                 c.execute("""
                                     INSERT OR IGNORE INTO whale_classification
-                                    (txid, btc, time, from_cluster, to_cluster, flow_type)
-                                    VALUES (?,?,?,?,?,?)
-                                """, (txid, flow_btc, now, from_c, to_c, flow_type))
+                                    (txid, btc, time, from_cluster, to_cluster, flow_type, confidence)
+                                    VALUES (?,?,?,?,?,?,?)
+                                """, (txid, flow_btc, now, from_c, to_c, flow_type, confidence))
 
                                 if flow_btc >= ALERT_WHALE_BTC:
 
@@ -338,6 +350,7 @@ async def mempool_ws_worker():
                                         "flow": flow_type,
                                         "from_cluster": from_c,
                                         "to_cluster": to_c,
+                                        "confidence": confidence,
                                         "time": now
                                     }
 

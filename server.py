@@ -339,6 +339,7 @@ def whales():
             SELECT
                 txid,
                 btc,
+                confidence,
                 time,
                 flow_type,
                 from_cluster,

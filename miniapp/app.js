@@ -39,6 +39,7 @@ async function load() {
             for (const x of wj.whales) {
                 const t = fmtTime(x.time);
                 const btc = Number(x.btc || 0);
+                const conf = Number(x.confidence || 0);
                 const isHuge = btc >= 1000;
                 const cls = isHuge ? "whale huge" : "whale";
 
@@ -55,6 +56,7 @@ async function load() {
                         ${btc.toFixed(2)} BTC
                         ${dirArrow}
                         ${flowText}
+                        <span class="confidence">(${(conf*100).toFixed(0)}%)</span>
                     </div>
                 `;
             }

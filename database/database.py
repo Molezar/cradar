@@ -134,6 +134,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         txid TEXT,
         btc REAL,
+        confidence REAL DEFAULT 0.7,
         time INTEGER,
         from_cluster INTEGER,
         to_cluster INTEGER,
