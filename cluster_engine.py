@@ -26,16 +26,14 @@ def get_recent_exchange_txs(cursor, since_ts, cluster_id):
         WHERE time > ?
         AND (from_cluster = ? OR to_cluster = ?)
     """, (since_ts, cluster_id, cluster_id)).fetchall()
-
     return [r["txid"] for r in rows]
 
 
-def detect_change_addresses(cursor, txids, cluster_id, now):
+def detect_change_addresses(cursor, txids, cluster_id, now, cache):
     if not txids:
         return 0
 
     placeholders = ",".join("?" * len(txids))
-
     rows = cursor.execute(f"""
         SELECT o.txid, o.address, o.btc
         FROM tx_outputs o
@@ -43,37 +41,29 @@ def detect_change_addresses(cursor, txids, cluster_id, now):
     """, txids).fetchall()
 
     tx_outputs = defaultdict(list)
-
     for r in rows:
         tx_outputs[r["txid"]].append((r["address"], r["btc"]))
 
     learned = 0
-
     for txid, outputs in tx_outputs.items():
-
-        # change обычно когда ровно 2 выхода
         if len(outputs) != 2:
             continue
-
         addr1, val1 = outputs[0]
         addr2, val2 = outputs[1]
 
-        # выбираем больший выход как change
-        if val1 > val2:
-            change_addr = addr1
-        else:
-            change_addr = addr2
+        change_addr = addr1 if val1 > val2 else addr2
 
-        # фильтр modern change address
         if not change_addr or not change_addr.startswith("bc1"):
             continue
 
-        # проверяем что адрес ещё не кластеризован
-        existing = cursor.execute("""
-            SELECT cluster_id
-            FROM cluster_addresses
-            WHERE address=?
-        """, (change_addr,)).fetchone()
+        existing = cache.get(change_addr)
+        if existing is None:
+            existing = cursor.execute("""
+                SELECT cluster_id
+                FROM cluster_addresses
+                WHERE address=?
+            """, (change_addr,)).fetchone()
+            cache[change_addr] = existing
 
         if existing:
             continue
@@ -83,19 +73,17 @@ def detect_change_addresses(cursor, txids, cluster_id, now):
             (address, cluster_id, confidence, first_seen, last_seen)
             VALUES (?,?,?,?,?)
         """, (change_addr, cluster_id, 0.7, now, now))
-
+        cache[change_addr] = {"cluster_id": cluster_id, "confidence": 0.7}
         learned += 1
 
     return learned
 
 
-def detect_multi_input_exchange(cursor, txids, cluster_id, now):
-
+def detect_multi_input_exchange(cursor, txids, cluster_id, now, cache):
     if not txids:
         return 0
 
     placeholders = ",".join("?" * len(txids))
-
     rows = cursor.execute(f"""
         SELECT txid, address
         FROM tx_inputs
@@ -103,45 +91,41 @@ def detect_multi_input_exchange(cursor, txids, cluster_id, now):
     """, txids).fetchall()
 
     tx_inputs = defaultdict(list)
-
     for r in rows:
         tx_inputs[r["txid"]].append(r["address"])
 
     learned = 0
-
     for txid, addresses in tx_inputs.items():
-
-        # multi-input только если больше одного input
         if len(addresses) < 2:
             continue
 
         exchange_seen = False
-
-        # проверяем есть ли exchange input
         for addr in addresses:
-            r = cursor.execute("""
-                SELECT cluster_id
-                FROM cluster_addresses
-                WHERE address=?
-            """, (addr,)).fetchone()
-
-            if r and r["cluster_id"] == cluster_id:
+            existing = cache.get(addr)
+            if existing is None:
+                existing = cursor.execute("""
+                    SELECT cluster_id
+                    FROM cluster_addresses
+                    WHERE address=?
+                """, (addr,)).fetchone()
+                cache[addr] = existing
+            if existing and existing["cluster_id"] == cluster_id:
                 exchange_seen = True
                 break
 
         if not exchange_seen:
             continue
 
-        # расширяем cluster
         for addr in addresses:
+            existing = cache.get(addr)
+            if existing is None:
+                existing = cursor.execute("""
+                    SELECT cluster_id, confidence
+                    FROM cluster_addresses
+                    WHERE address=?
+                """, (addr,)).fetchone()
+                cache[addr] = existing
 
-            existing = cursor.execute("""
-                SELECT cluster_id
-                FROM cluster_addresses
-                WHERE address=?
-            """, (addr,)).fetchone()
-
-            # если адрес уже в другом кластере — пропускаем
             if existing and existing["cluster_id"] != cluster_id:
                 continue
 
@@ -152,41 +136,37 @@ def detect_multi_input_exchange(cursor, txids, cluster_id, now):
                         last_seen = ?
                     WHERE address=?
                 """, (now, addr))
-
+                cache[addr]["confidence"] = min(1.0, cache[addr]["confidence"] + 0.05)
             else:
                 cursor.execute("""
                     INSERT INTO cluster_addresses
                     (address, cluster_id, confidence, first_seen, last_seen)
                     VALUES (?,?,?,?,?)
                 """, (addr, cluster_id, 0.8, now, now))
-
+                cache[addr] = {"cluster_id": cluster_id, "confidence": 0.8}
                 learned += 1
 
-    return learned   
+    return learned
 
 
 def expand_exchange_cluster_from_db(cursor, cluster_id, name):
     logger.info(f"[CLUSTER] Expanding {name} from DB")
-
     now = int(time.time())
     since = now - (LOOKBACK_DAYS * 24 * 3600)
+    address_cache_session = {}  # <-- кэш для всех проверок адресов в сессии
 
     txids = get_recent_exchange_txs(cursor, since, cluster_id)
-
     if not txids:
         return
 
-    # change detection
-    change_learned = detect_change_addresses(cursor, txids, cluster_id, now)
+    change_learned = detect_change_addresses(cursor, txids, cluster_id, now, address_cache_session)
     if change_learned:
         logger.info(f"[CLUSTER] {name} learned {change_learned} change addresses")
-    # multi-input detection
-    multi_learned = detect_multi_input_exchange(cursor, txids, cluster_id, now)
-    
+
+    multi_learned = detect_multi_input_exchange(cursor, txids, cluster_id, now, address_cache_session)
     if multi_learned:
         logger.info(f"[CLUSTER] {name} learned {multi_learned} multi-input addresses")
 
-    # 1️⃣ Собираем адреса всех tx_outputs сразу
     placeholders = ",".join("?" * len(txids))
     rows = cursor.execute(f"""
         SELECT address
@@ -203,13 +183,15 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
         if count < SWEEP_THRESHOLD:
             continue
 
-        # пропускаем если адрес уже в другом кластере
-        existing = cursor.execute("""
-            SELECT cluster_id, confidence
-            FROM cluster_addresses
-            WHERE address=?
-        """, (addr,)).fetchone()
-        
+        existing = address_cache_session.get(addr)
+        if existing is None:
+            existing = cursor.execute("""
+                SELECT cluster_id, confidence
+                FROM cluster_addresses
+                WHERE address=?
+            """, (addr,)).fetchone()
+            address_cache_session[addr] = existing
+
         if existing and existing["cluster_id"] != cluster_id:
             continue
 
@@ -221,12 +203,14 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
                         last_seen = ?
                     WHERE address=?
                 """, (now, addr))
+                address_cache_session[addr]["confidence"] = min(1.0, address_cache_session[addr]["confidence"] + 0.05)
         else:
             cursor.execute("""
                 INSERT INTO cluster_addresses
                 (address, cluster_id, confidence, first_seen, last_seen)
                 VALUES (?,?,?,?,?)
             """, (addr, cluster_id, 0.6, now, now))
+            address_cache_session[addr] = {"cluster_id": cluster_id, "confidence": 0.6}
             learned += 1
 
     if learned > 0:
@@ -238,12 +222,9 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
                 last_updated=?
             WHERE id=?
         """, (cluster_id, now, cluster_id))
-        
-        # 🔹 логируем новый размер кластера
         new_size = cursor.execute("""
             SELECT size FROM clusters WHERE id=?
         """, (cluster_id,)).fetchone()["size"]
-    
         logger.info(f"[CLUSTER] {name} size now {new_size}")
 
 

@@ -58,14 +58,14 @@ def create_behavioral_cluster(address, cursor, cache=None):
     cursor.execute("""
         INSERT INTO clusters
         (cluster_type, confidence, size, created_at, last_updated)
-        VALUES ('BEHAVIORAL', 0.4, 1, ?, ?)
-    """, (now, now))
+        VALUES (?, ?, ?, ?, ?)
+    """, ("BEHAVIORAL", 0.4, 1, now, now))
     cluster_id = cursor.lastrowid
     cursor.execute("""
         INSERT OR IGNORE INTO cluster_addresses
         (address, cluster_id, confidence, first_seen, last_seen)
-        VALUES (?, ?, 0.4, ?, ?)
-    """, (address, cluster_id, now, now))
+        VALUES (?, ?, ?, ?, ?)
+    """, (address, cluster_id, 0.4, now, now))
     if cache is not None:
         cache[address] = (cluster_id, 0.4)
     return cluster_id
@@ -137,11 +137,9 @@ def behavioral_to_exchange(cluster_id, cursor, now):
     if multi_input_count >= 3 or sweep_count >= 3:
         cursor.execute("""
             UPDATE clusters
-            SET cluster_type='EXCHANGE',
-                confidence=0.9,
-                last_updated=?
+            SET cluster_type=?, confidence=?, last_updated=?
             WHERE id=?
-        """, (now, cluster_id))
+        """, ("EXCHANGE", 0.9, now, cluster_id))
         logger.info(f"[CLUSTER] Behavioral cluster {cluster_id} upgraded to EXCHANGE")
         return True
     return False
@@ -251,8 +249,8 @@ def process_tx(tx, cursor, cluster_cache):
                 cursor.execute("""
                     INSERT OR IGNORE INTO cluster_addresses
                     (address, cluster_id, confidence, first_seen, last_seen)
-                    VALUES (?, ?, 0.6, ?, ?)
-                """, (addr, base_cluster, now, now))
+                    VALUES (?, ?, ?, ?, ?)
+                """, (addr, base_cluster, 0.6, now, now))
                 addr_to_cluster[addr] = base_cluster
                 cluster_cache[addr] = (base_cluster, 0.6)
             else:
