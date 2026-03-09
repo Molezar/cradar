@@ -1,4 +1,4 @@
-#cluster_engine.py
+# cluster_engine.py
 import time
 from collections import defaultdict
 
@@ -240,6 +240,13 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
                 last_updated=?
             WHERE id=?
         """, (cluster_id, now, cluster_id))
+        
+        # 🔹 логируем новый размер кластера
+        new_size = cursor.execute("""
+            SELECT size FROM clusters WHERE id=?
+        """, (cluster_id,)).fetchone()["size"]
+    
+        logger.info(f"[CLUSTER] {name} size now {new_size}")
 
 
 def run_cluster_expansion():

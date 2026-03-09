@@ -13,6 +13,7 @@ from config import Config
 from database.database import get_db, init_db
 from onchain import mempool_ws_worker, get_event_queue
 from cluster_engine import run_cluster_expansion
+from cluster_scanner import scan_exchange_anchors
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -491,26 +492,37 @@ def prediction():
 @app.route("/events")
 def events():
     def stream():
+
         logger.info("[SSE] Client connected")
+
         conn = None
         try:
             conn = get_db()
+
             rows = conn.execute("""
-                SELECT txid, btc, time, flow_type, from_cluster, to_cluster
-                FROM alert_tx
+                SELECT
+                    txid,
+                    btc,
+                    confidence,
+                    time,
+                    flow_type,
+                    from_cluster,
+                    to_cluster
+                FROM whale_classification
+                WHERE btc >= ?
                 ORDER BY time DESC
                 LIMIT 50
-            """).fetchall()
+            """, (Config.ALERT_WHALE_BTC,)).fetchall()
 
             for r in reversed(rows):
                 yield f"data: {json.dumps(dict(r))}\n\n"
-        except Exception:
-            logger.exception("[SSE] Failed to preload events")
+
         finally:
             if conn:
                 conn.close()
 
         q = get_event_queue()
+
         while True:
             try:
                 tx = q.get(timeout=10)
@@ -543,6 +555,25 @@ def clustering_loop():
             logger.exception("Cluster expansion error")
         time.sleep(1800)
 
+def anchor_scan_loop():
+
+    logger.info("[ANCHOR_SCAN] Initial scan starting")
+
+    try:
+        scan_exchange_anchors()
+    except Exception:
+        logger.exception("[ANCHOR_SCAN] Initial scan failed")
+
+    while True:
+
+        logger.info("[ANCHOR_SCAN] Scheduled scan starting")
+
+        try:
+            scan_exchange_anchors()
+        except Exception:
+            logger.exception("[ANCHOR_SCAN] Scheduled scan failed")
+
+        time.sleep(43200)  # 12 часов
 
 def ensure_db():
     db_path = Config.DB_PATH
@@ -567,6 +598,7 @@ if __name__ == "__main__":
 
     # Синхронные воркеры
     threading.Thread(target=clustering_loop, daemon=True).start()
+    threading.Thread(target=anchor_scan_loop, daemon=True).start()
     threading.Thread(target=price_sampler, daemon=True).start()
     threading.Thread(target=candle_sampler, daemon=True).start()
 

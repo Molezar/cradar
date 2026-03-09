@@ -149,7 +149,7 @@ async def whale_listener():
                                     txid = tx.get("txid")
                                     logger.info(f"[BOT] Received event {tx.get('txid')}")
                                     btc = float(tx.get("btc", 0))
-                                    flow = tx.get("flow") or "UNKNOWN"
+                                    flow = tx.get("flow_type") or "UNKNOWN"
                                     confidence = float(tx.get("confidence", 0.7))
                                     from_cluster = tx.get("from_cluster")
                                     to_cluster = tx.get("to_cluster")

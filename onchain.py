@@ -338,16 +338,10 @@ async def mempool_ws_worker():
 
                                 if flow_btc >= ALERT_WHALE_BTC:
 
-                                    c.execute("""
-                                        INSERT INTO alert_tx
-                                        (txid, btc, time, flow_type, from_cluster, to_cluster)
-                                        VALUES (?,?,?,?,?,?)
-                                    """, (txid, flow_btc, now, flow_type, from_c, to_c))
-
                                     event = {
                                         "txid": txid,
                                         "btc": round(flow_btc, 4),
-                                        "flow": flow_type,
+                                        "flow_type": flow_type,
                                         "from_cluster": from_c,
                                         "to_cluster": to_c,
                                         "confidence": confidence,

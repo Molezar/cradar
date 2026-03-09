@@ -40,7 +40,7 @@ async function load() {
                 const t = fmtTime(x.time);
                 const btc = Number(x.btc || 0);
                 const conf = Number(x.confidence || 0);
-                const isHuge = btc >= 1000;
+                const isHuge = btc >= ALERT_WHALE_BTC;
                 const cls = isHuge ? "whale huge" : "whale";
 
                 let dirArrow = "";

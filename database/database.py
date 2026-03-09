@@ -171,33 +171,6 @@ def init_db():
     """)
 
     # =====================================================
-    # ALERT TX
-    # =====================================================
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS alert_tx (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        txid TEXT,
-        btc REAL,
-        time INTEGER,
-        flow_type TEXT,
-        from_cluster INTEGER,
-        to_cluster INTEGER,
-        FOREIGN KEY(from_cluster) REFERENCES clusters(id),
-        FOREIGN KEY(to_cluster) REFERENCES clusters(id)
-    )
-    """)
-
-    c.execute("""
-    CREATE INDEX IF NOT EXISTS idx_alert_time
-    ON alert_tx(time DESC)
-    """)
-
-    c.execute("""
-    CREATE INDEX IF NOT EXISTS idx_alert_txid
-    ON alert_tx(txid)
-    """)
-
-    # =====================================================
     # Exchange Flow
     # =====================================================
     c.execute("""
