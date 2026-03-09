@@ -147,7 +147,6 @@ async def whale_listener():
                                         continue
 
                                     txid = tx.get("txid")
-                                    logger.info(f"[BOT] Received event {tx.get('txid')}")
                                     btc = float(tx.get("btc", 0))
                                     flow = tx.get("flow_type") or "UNKNOWN"
                                     confidence = float(tx.get("confidence", 0.7))
@@ -163,46 +162,41 @@ async def whale_listener():
                                     seen_txids.add(txid)
 
                                     # -------------------------------------------------
-                                    # Direction + Title
+                                    # Слать алерт только для верных транзакций
                                     # -------------------------------------------------
+                                    if btc >= ALERT_WHALE_BTC and flow != "UNKNOWN" and confidence >= 0.7:
 
-                                    if flow == "DEPOSIT":
-                                        emoji = "🔴"
-                                        title = "SELL pressure"
-                                        direction = "→ Exchange"
-                                    elif flow == "WITHDRAW":
-                                        emoji = "🟢"
-                                        title = "ACCUMULATION"
-                                        direction = "← Exchange"
-                                    elif flow == "INTERNAL":
-                                        emoji = "🟡"
-                                        title = "Internal move"
-                                        direction = "↔ Internal"
-                                    else:
-                                        emoji = "⚪"
-                                        title = "Unknown flow"
-                                        direction = ""
+                                        if flow == "DEPOSIT":
+                                            emoji = "🔴"
+                                            title = "SELL pressure"
+                                            direction = "→ Exchange"
+                                        elif flow == "WITHDRAW":
+                                            emoji = "🟢"
+                                            title = "ACCUMULATION"
+                                            direction = "← Exchange"
+                                        elif flow == "INTERNAL":
+                                            emoji = "🟡"
+                                            title = "Internal move"
+                                            direction = "↔ Internal"
 
-                                    if btc >= 10000:
-                                        size = "HUGE"
-                                    else:
-                                        size = "Whale"
-                                
-                                    msg = (
-                                        f"{emoji} <b>{title}</b>\n"
-                                        f"{size}: <b>{btc:.2f} BTC</b>\n"
-                                        f"Confidence: <b>{confidence*100:.0f}%</b>\n"
-                                        f"{direction}\n"
-                                        f"<code>{txid[:16]}…</code>"
-                                    )
+                                        # Размер
+                                        size = "HUGE" if btc >= 10000 else "Whale"
 
-                                    for cid in list(subscribers):
-                                        try:
-                                            logger.info(f"[BOT] Sending alert {txid} to {cid}")
-                                            await bot.send_message(cid, msg)
-                                        except Exception as e:
-                                            logger.error(f"[BOT] Send error for {cid}: {e}")
-                                            subscribers.discard(cid)
+                                        msg = (
+                                            f"{emoji} <b>{title}</b>\n"
+                                            f"{size}: <b>{btc:.2f} BTC</b>\n"
+                                            f"Confidence: <b>{confidence*100:.0f}%</b>\n"
+                                            f"{direction}\n"
+                                            f"<code>{txid[:16]}…</code>"
+                                        )
+
+                                        for cid in list(subscribers):
+                                            try:
+                                                logger.info(f"[BOT] Sending alert {txid} to {cid}")
+                                                await bot.send_message(cid, msg)
+                                            except Exception as e:
+                                                logger.error(f"[BOT] Send error for {cid}: {e}")
+                                                subscribers.discard(cid)
 
             except asyncio.CancelledError:
                 logger.info("whale_listener cancelled")
@@ -292,6 +286,7 @@ async def netflow_alert_monitor():
             logger.exception(f"Error in netflow_alert_monitor: {e}")
 
         await asyncio.sleep(NET_ALERT_INTERVAL)
+        
 # ==============================================
 # Trade Monitor
 # ==============================================
