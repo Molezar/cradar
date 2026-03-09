@@ -284,68 +284,6 @@ def init_db():
     INSERT OR IGNORE INTO bot_settings (id, auto_mode)
     VALUES (1, 0)
     """)
-
-    # =====================================================
-    # Seed exchange anchors (cold wallets)
-    # =====================================================
-    anchors = [
-        # BINANCE
-        ('bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh', 'Binance'),
-        ('bc1q0e0g9s7n6yd9e5n6g6n2p9n7w6g2g7p7y9kz9f', 'Binance'),
-        ('bc1q8z3r2n4q9c5x6l8n2v8m4f0tq8p3k7m6u9e0d', 'Binance'),
-
-        # COINBASE
-        ('bc1qz5h7d0y8m4c9p8g6e3x0k9r7l5v6t4s3n2a1q0', 'Coinbase'),
-        ('bc1qk0l9m8n7p6q5r4s3t2u1v0w9x8y7z6a5b4c3d', 'Coinbase'),
-
-        # KRAKEN
-        ('1Kraken4x3kJp9H5e5mZ6T7N8B4QWJf6', 'Kraken'),
-        ('bc1qkrakenvault0n3x8z4m5g7p9k6l2a', 'Kraken'),
-
-        # BITFINEX
-        ('bc1qbitfinexvault0f3x8z4m5g7p9k6l2a', 'Bitfinex'),
-        ('1BitfiNexColdWalletX93P7kT3', 'Bitfinex'),
-
-        # BITSTAMP
-        ('bc1qbitstampcold9n4m3x8z6k7p5g2l', 'Bitstamp'),
-        ('1BitstampVaultMainCold123', 'Bitstamp'),
-    ]
-
-    now = int(time.time())
-
-    # Вставляем анкеры в cluster_addresses как отдельные кластеры EXCHANGE
-    for addr, exch in anchors:
-        # создаем кластер, если его ещё нет
-        c.execute("""
-            SELECT id FROM clusters
-            WHERE cluster_type='EXCHANGE' AND name=?
-        """, (exch,))
-        row = c.fetchone()
-        if row:
-            cluster_id = row["id"]
-        else:
-            c.execute("""
-                INSERT INTO clusters
-                (cluster_type, name, confidence, size, created_at, last_updated)
-                VALUES ('EXCHANGE', ?, 1.0, 0, ?, ?)
-            """, (exch, now, now))
-            cluster_id = c.lastrowid
-
-        # вставляем адрес анкера
-        c.execute("""
-            INSERT OR IGNORE INTO cluster_addresses
-            (address, cluster_id, confidence, first_seen, last_seen)
-            VALUES (?, ?, 1.0, ?, ?)
-        """, (addr, cluster_id, now, now))
-
-    # обновляем size кластеров после вставки анкеров
-    c.execute("""
-        UPDATE clusters
-        SET size = (
-            SELECT COUNT(*) FROM cluster_addresses WHERE cluster_id=clusters.id
-        )
-        WHERE cluster_type='EXCHANGE'
-    """)
     
     conn.commit()
     conn.close()

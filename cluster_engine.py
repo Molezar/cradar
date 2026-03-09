@@ -175,8 +175,6 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
 
     if not txids:
         return
-    
-    now = int(time.time())
 
     # change detection
     change_learned = detect_change_addresses(cursor, txids, cluster_id, now)

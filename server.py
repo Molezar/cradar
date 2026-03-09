@@ -13,7 +13,6 @@ from config import Config
 from database.database import get_db, init_db
 from onchain import mempool_ws_worker, get_event_queue
 from cluster_engine import run_cluster_expansion
-from cluster_scanner import scan_exchange_anchors
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -555,26 +554,6 @@ def clustering_loop():
             logger.exception("Cluster expansion error")
         time.sleep(1800)
 
-def anchor_scan_loop():
-
-    logger.info("[ANCHOR_SCAN] Initial scan starting")
-
-    try:
-        scan_exchange_anchors()
-    except Exception:
-        logger.exception("[ANCHOR_SCAN] Initial scan failed")
-
-    while True:
-
-        logger.info("[ANCHOR_SCAN] Scheduled scan starting")
-
-        try:
-            scan_exchange_anchors()
-        except Exception:
-            logger.exception("[ANCHOR_SCAN] Scheduled scan failed")
-
-        time.sleep(43200)  # 12 часов
-
 def ensure_db():
     db_path = Config.DB_PATH
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -598,7 +577,6 @@ if __name__ == "__main__":
 
     # Синхронные воркеры
     threading.Thread(target=clustering_loop, daemon=True).start()
-    threading.Thread(target=anchor_scan_loop, daemon=True).start()
     threading.Thread(target=price_sampler, daemon=True).start()
     threading.Thread(target=candle_sampler, daemon=True).start()
 
