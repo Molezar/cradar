@@ -34,8 +34,7 @@ def resolve_cluster(address, cursor):
         FROM cluster_addresses
         WHERE address=?
     """, (address,)).fetchone()
-    if r:
-        logger.debug(f"[CLUSTER] {address[:8]} -> {r['cluster_id']}")
+
     if not r:
         return None, 0
 
@@ -225,8 +224,6 @@ async def mempool_ws_worker():
                         inputs = get_input_map(tx)
                         outputs = get_output_map(tx)
 
-                        logger.info(f"[DEBUG] raw outputs: {tx.get('vout')}")
-
                         total = sum(outputs.values())
                         # heuristic confidence
                         if len(inputs) == 1 and len(outputs) == 1:
@@ -236,12 +233,7 @@ async def mempool_ws_worker():
                         else:
                             confidence = 0.7  # default
 
-                        logger.info(
-                            f"[TX] {txid} inputs={len(inputs)} outputs={len(outputs)} total={total:.6f}"
-                        )
-
                         if total < MIN_WHALE_BTC:
-                            logger.debug(f"[TX] Skip small tx {txid} {total:.6f} BTC")
                             continue
 
                         logger.info(f"[TX] Whale candidate {txid} {total:.6f} BTC")
