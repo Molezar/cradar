@@ -111,6 +111,22 @@ async def check_candles_api():
 # ==============================================
 # SSE Listeners
 # ==============================================
+def get_whale_flow_info(flow: str):
+    """
+    Возвращает эмодзи, заголовок и направление для типа транзакции.
+    """
+    mapping = {
+        "DEPOSIT": ("🔴", "SELL pressure", "→ Exchange"),
+        "POSSIBLE_EXCHANGE_DEPOSIT": ("🔴", "SELL pressure", "→ Exchange"),
+        "WITHDRAW": ("🟢", "ACCUMULATION", "← Exchange"),
+        "POSSIBLE_EXCHANGE_WITHDRAW": ("🟢", "ACCUMULATION", "← Exchange"),
+        "INTERNAL": ("🟡", "Internal move", "↔ Internal"),
+        "CONSOLIDATION": ("🟣", "Consolidation", "⤴️"),
+        "TRANSFER": ("🔵", "Transfer", "↔ Transfer"),
+    }
+    return mapping.get(flow, ("❓", "Unknown flow", "→"))
+
+
 async def whale_listener():
     await asyncio.sleep(2)
     logger.info("Starting whale_listener SSE task")
@@ -126,8 +142,9 @@ async def whale_listener():
 
                         logger.info("[BOT] Connected to SSE")
                         async for chunk in resp.content.iter_any():
-
                             text = chunk.decode("utf-8", errors="ignore")
+                            if not text:
+                                continue
                             buffer += text
 
                             while "\n\n" in buffer:
@@ -143,15 +160,19 @@ async def whale_listener():
 
                                     try:
                                         tx = json.loads(raw)
-                                    except:
+                                    except Exception:
                                         continue
 
                                     txid = tx.get("txid")
-                                    btc = float(tx.get("btc", 0))
+                                    try:
+                                        btc = float(tx.get("btc") or 0)
+                                    except (TypeError, ValueError):
+                                        btc = 0
                                     flow = tx.get("flow_type") or "UNKNOWN"
-                                    confidence = float(tx.get("confidence", 0.7))
-                                    from_cluster = tx.get("from_cluster")
-                                    to_cluster = tx.get("to_cluster")
+                                    try:
+                                        confidence = float(tx.get("confidence") or 0.7)
+                                    except (TypeError, ValueError):
+                                        confidence = 0.7
 
                                     if not txid or btc <= 0:
                                         continue
@@ -165,21 +186,7 @@ async def whale_listener():
                                     # Слать алерт только для верных транзакций
                                     # -------------------------------------------------
                                     if btc >= ALERT_WHALE_BTC and flow != "UNKNOWN" and confidence >= 0.7:
-
-                                        if flow == "DEPOSIT":
-                                            emoji = "🔴"
-                                            title = "SELL pressure"
-                                            direction = "→ Exchange"
-                                        elif flow == "WITHDRAW":
-                                            emoji = "🟢"
-                                            title = "ACCUMULATION"
-                                            direction = "← Exchange"
-                                        elif flow == "INTERNAL":
-                                            emoji = "🟡"
-                                            title = "Internal move"
-                                            direction = "↔ Internal"
-
-                                        # Размер
+                                        emoji, title, direction = get_whale_flow_info(flow)
                                         size = "HUGE" if btc >= 10000 else "Whale"
 
                                         msg = (
