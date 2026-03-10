@@ -155,6 +155,8 @@ def behavioral_to_exchange(cluster_id, cursor, now):
 
     multi_input_count = 0
     sweep_count = 0
+    fanout_count = 0
+    deposit_pattern = 0
 
     for txid in txids:
 
@@ -173,8 +175,19 @@ def behavioral_to_exchange(cluster_id, cursor, now):
 
         if len(outputs) > 2:
             sweep_count += 1
+            
+        if len(outputs) >= 10:
+            fanout_count += 1
+            
+        if len(inputs) >= 3 and len(outputs) == 1:
+            deposit_pattern += 1
 
-    if multi_input_count >= 3 or sweep_count >= 3:
+    if (
+        multi_input_count >= 5
+        or sweep_count >= 5
+        or fanout_count >= 3
+        or deposit_pattern >= 5
+    ):
 
         cursor.execute("""
             UPDATE clusters
@@ -344,7 +357,7 @@ def process_tx(tx, cursor, cluster_cache):
 
         addr_to_cluster[addr] = cid
 
-    if input_addrs and len(input_addrs) >= 2 and total >= 20:
+    if input_addrs and len(input_addrs) >= 2 and total >= 5:
 
         cluster_ids = [cid for cid in addr_to_cluster.values() if cid]
 
@@ -423,6 +436,30 @@ def process_tx(tx, cursor, cluster_cache):
             VALUES (?,?,?,?,?,?,?)
         """, (txid, flow_btc, now, from_c, to_c, flow_type, confidence))
 
+        # ======================================
+        # Exchange flow aggregation (1h bucket)
+        # ======================================
+        bucket = now - (now % 3600)
+
+        if flow_type in ("DEPOSIT", "WITHDRAW", "INTERNAL"):
+
+            if flow_type == "DEPOSIT":
+                cid = to_c
+        
+            elif flow_type == "WITHDRAW":
+                cid = from_c
+        
+            else:  # INTERNAL
+                cid = from_c
+
+            if cid:
+                cursor.execute("""
+                    INSERT INTO exchange_flow (ts, cluster_id, flow_type, btc)
+                    VALUES (?,?,?,?)
+                    ON CONFLICT(ts, cluster_id, flow_type)
+                    DO UPDATE SET btc = btc + excluded.btc
+                """, (bucket, cid, flow_type, flow_btc))
+        
         if flow_btc >= ALERT_WHALE_BTC:
 
             event = {

@@ -521,7 +521,7 @@ async def bot_heartbeat():
             logger.error(f"Heartbeat error: {e}")
             
         await asyncio.sleep(120)
-        
+      
 # ==============================================
 # Main
 # ==============================================

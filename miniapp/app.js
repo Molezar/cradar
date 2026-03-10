@@ -40,11 +40,12 @@ function flowLabel(flow) {
 async function load() {
     try {
 
-        const [wj, pj, pcj, volj] = await Promise.all([
+        const [wj, pj, pcj, volj, flowj] = await Promise.all([
             fetch("/whales?t=" + Date.now()).then(r => r.json()),
             fetch("/prediction?t=" + Date.now()).then(r => r.json()),
             fetch("/price?t=" + Date.now()).then(r => r.json()),
-            fetch("/volumes?t=" + Date.now()).then(r => r.json())
+            fetch("/volumes?t=" + Date.now()).then(r => r.json()),
+            fetch("/exchange_flow?window=600&t=" + Date.now()).then(r => r.json())
         ]);
 
         // --- Whales List ---
@@ -114,10 +115,24 @@ async function load() {
         const netColor = volj.net >= 0 ? "positive" : "negative";
 
         volHtml += `<div>NET (W-D): <span class='net ${netColor}'>${volj.net.toFixed(2)} BTC</span></div>`;
-
         volHtml += "</div>";
 
         document.getElementById("volumes").innerHTML = volHtml;
+
+        // --- Exchange Flow Minimap ---
+        let flowHtml = "<div class='volumes'><div class='pred'>=== EXCHANGE FLOW (10 min) ===</div>";
+
+        for (const x of flowj.flows || []) {
+            const net = Number(x.net_flow) || 0;
+            const dir = net > 0 ? "⬆" : net < 0 ? "⬇" : "→";
+            const color = net > 0 ? "green" : net < 0 ? "red" : "gray";
+
+            flowHtml += `<div style="color:${color}">
+                Cluster ${x.cluster_id}: ${dir} ${net.toFixed(2)} BTC
+            </div>`;
+        }
+
+        document.getElementById("exchange_flow").innerHTML = flowHtml;
 
     } catch (e) {
 

@@ -407,6 +407,46 @@ def volumes():
         if conn:
             conn.close()
 
+@app.route("/exchange_flow")
+def exchange_flow():
+    """
+    Возвращает net_flow по кластерам за последние N секунд.
+    Параметр query: ?window=600 (по умолчанию 600 секунд = 10 минут)
+    """
+    window = int(request.args.get("window", 600))  # секунд
+    now = int(time.time())
+    since = now - window
+
+    conn = None
+    try:
+        conn = get_db()
+        rows = conn.execute("""
+            SELECT 
+                cluster_id,
+                SUM(CASE WHEN flow_type='DEPOSIT' THEN btc ELSE 0 END) AS deposit,
+                SUM(CASE WHEN flow_type='WITHDRAW' THEN btc ELSE 0 END) AS withdraw,
+                SUM(CASE WHEN flow_type='DEPOSIT' THEN btc ELSE 0 END) -
+                SUM(CASE WHEN flow_type='WITHDRAW' THEN btc ELSE 0 END) AS net_flow
+            FROM exchange_flow
+            WHERE ts > ?
+            GROUP BY cluster_id
+            ORDER BY net_flow DESC
+        """, (since,)).fetchall()
+
+        result = [dict(r) for r in rows]
+        return jsonify({
+            "window": window,
+            "count": len(result),
+            "flows": result
+        })
+
+    except Exception:
+        logger.exception("Exchange flow endpoint error")
+        return jsonify({"error": "Internal server error"}), 500
+    finally:
+        if conn:
+            conn.close()
+        
 
 @app.route("/price")
 def price():

@@ -127,6 +127,25 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_cluster_addr_cluster ON cluster_addresses(cluster_id)")
 
     # =====================================================
+    # Address fingerprint
+    # =====================================================
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS address_fingerprint (
+        prefix TEXT,
+        length INTEGER,
+        cluster_id INTEGER,
+        count INTEGER,
+        PRIMARY KEY(prefix,length,cluster_id),
+        FOREIGN KEY(cluster_id) REFERENCES clusters(id)
+    )
+    """)
+    
+    c.execute("""
+    CREATE INDEX IF NOT EXISTS idx_address_fingerprint_prefix
+    ON address_fingerprint(prefix)
+    """)
+    
+    # =====================================================
     # Whale classification (flow-based)
     # =====================================================
     c.execute("""
