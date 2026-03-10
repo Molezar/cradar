@@ -375,23 +375,18 @@ def volumes():
         now = int(time.time())
         since = now - 3600  # последний час
 
-        # Сумма DEPOSIT за последний час
-        c.execute("""
-            SELECT COALESCE(SUM(btc), 0) as total
+        row = c.execute("""
+            SELECT
+                COALESCE(SUM(CASE WHEN flow_type='DEPOSIT' THEN btc END), 0) as deposit,
+                COALESCE(SUM(CASE WHEN flow_type='WITHDRAW' THEN btc END), 0) as withdraw
             FROM whale_classification
-            WHERE time > ? AND flow_type = 'DEPOSIT'
-        """, (since,))
-        deposit = c.fetchone()["total"]
+            WHERE time > ?
+            AND flow_type IN ('DEPOSIT','WITHDRAW')
+        """, (since,)).fetchone()
 
-        # Сумма WITHDRAW за последний час
-        c.execute("""
-            SELECT COALESCE(SUM(btc), 0) as total
-            FROM whale_classification
-            WHERE time > ? AND flow_type = 'WITHDRAW'
-        """, (since,))
-        withdraw = c.fetchone()["total"]
-
-        net = withdraw - deposit  # разница (WITHDRAW - DEPOSIT)
+        deposit = row["deposit"]
+        withdraw = row["withdraw"]
+        net = withdraw - deposit
 
         return jsonify({
             "deposit": round(deposit, 2),
@@ -400,13 +395,15 @@ def volumes():
             "since": since,
             "now": now
         })
+
     except Exception:
         logger.exception("Volumes endpoint error")
         return jsonify({"error": "Internal server error"}), 500
+
     finally:
         if conn:
             conn.close()
-
+            
 @app.route("/exchange_flow")
 def exchange_flow():
     """

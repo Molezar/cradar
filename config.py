@@ -20,6 +20,7 @@ class Config:
     WEBAPP_URL = os.getenv("WEBAPP_URL")
     API_URL = os.getenv("API_URL")
 
+    MIN_TRACK_BTC = float(os.getenv("MIN_TRACK_BTC", "50"))
     MIN_WHALE_BTC = float(os.getenv("MIN_WHALE_BTC", "50"))
     ALERT_WHALE_BTC = float(os.getenv("ALERT_WHALE_BTC", "1000"))
     

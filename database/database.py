@@ -82,6 +82,16 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_tx_outputs_txid ON tx_outputs(txid)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_tx_inputs_addr ON tx_inputs(address)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_tx_outputs_addr ON tx_outputs(address)")
+    
+    c.execute("""
+    CREATE INDEX IF NOT EXISTS idx_tx_outputs_txid_addr
+    ON tx_outputs(txid, address)
+    """)
+    
+    c.execute("""
+    CREATE INDEX IF NOT EXISTS idx_tx_inputs_txid_addr
+    ON tx_inputs(txid, address)
+    """)
 
     # 🔒 Защита от дублей IO (важно для INSERT OR IGNORE)
     c.execute("""
@@ -168,22 +178,22 @@ def init_db():
 
     c.execute("""
     CREATE INDEX IF NOT EXISTS idx_whale_time
-    ON whale_classification(time DESC)
+    ON whale_classification(time)
     """)
 
     c.execute("""
     CREATE INDEX IF NOT EXISTS idx_whale_time_flow
     ON whale_classification(time, flow_type)
     """)
-
+    
     c.execute("""
-    CREATE INDEX IF NOT EXISTS idx_whale_to_cluster
-    ON whale_classification(to_cluster)
+    CREATE INDEX IF NOT EXISTS idx_whale_from_cluster_time
+    ON whale_classification(from_cluster, time)
     """)
-
+    
     c.execute("""
-    CREATE INDEX IF NOT EXISTS idx_whale_from_cluster
-    ON whale_classification(from_cluster)
+    CREATE INDEX IF NOT EXISTS idx_whale_to_cluster_time
+    ON whale_classification(to_cluster, time)
     """)
 
     # Защита от дублей flows

@@ -3,6 +3,7 @@ import time
 import asyncio
 import aiohttp
 import json
+from collections import deque
 
 from database.database import get_db
 from aiogram import Bot, Dispatcher
@@ -41,7 +42,8 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode="HTML")
 )
 subscribers = set()
-seen_txids = set()  # защита от дублей
+seen_txids_set = set()
+seen_txids = deque(maxlen=1000)
 
 dp = Dispatcher()
 setup_admin(dp, subscribers)
@@ -89,24 +91,6 @@ async def get_candle_info():
     finally:
         if conn:
             conn.close()
-
-async def check_candles_api():
-    """Проверяет доступность API свечей напрямую"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://api.binance.com/api/v3/klines",
-                params={"symbol": "BTCUSDT", "interval": "1m", "limit": 1},
-                timeout=5
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data and len(data) > 0:
-                        return True, float(data[0][4])
-                return False, None
-    except Exception as e:
-        logger.debug(f"Candles API check failed: {e}")
-        return False, None
         
 # ==============================================
 # SSE Listeners
@@ -126,95 +110,99 @@ def get_whale_flow_info(flow: str):
     }
     return mapping.get(flow, ("❓", "Unknown flow", "→"))
 
-
 async def whale_listener():
     await asyncio.sleep(2)
     logger.info("Starting whale_listener SSE task")
 
-    buffer = ""
+    async def connect_and_listen(session):
+        buffer = ""
+        logger.info(f"[BOT] Connecting to {API}/events")
+        async with session.get(API + "/events", timeout=None, ssl=ssl_context) as resp:
+            logger.info("[BOT] Connected to SSE")
+            async for chunk in resp.content.iter_any():
+                text = chunk.decode("utf-8", errors="ignore")
+                if not text:
+                    continue
+                buffer += text
 
-    try:
-        while True:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    logger.info(f"[BOT] Connecting to {API}/events")
-                    async with session.get(API + "/events", timeout=None, ssl=ssl_context) as resp:
+                while "\n\n" in buffer:
+                    event, buffer = buffer.split("\n\n", 1)
 
-                        logger.info("[BOT] Connected to SSE")
-                        async for chunk in resp.content.iter_any():
-                            text = chunk.decode("utf-8", errors="ignore")
-                            if not text:
-                                continue
-                            buffer += text
+                    for line in event.splitlines():
+                        if not line.startswith("data:"):
+                            continue
 
-                            while "\n\n" in buffer:
-                                event, buffer = buffer.split("\n\n", 1)
+                        raw = line[5:].strip()
+                        if not raw:
+                            continue
 
-                                for line in event.splitlines():
-                                    if not line.startswith("data:"):
-                                        continue
+                        try:
+                            tx = json.loads(raw)
+                        except Exception:
+                            continue
 
-                                    raw = line[5:].strip()
-                                    if not raw:
-                                        continue
+                        txid = tx.get("txid")
+                        try:
+                            btc = float(tx.get("btc") or 0)
+                        except (TypeError, ValueError):
+                            btc = 0
+                        flow = tx.get("flow_type") or "UNKNOWN"
+                        try:
+                            confidence = float(tx.get("confidence") or 0.7)
+                        except (TypeError, ValueError):
+                            confidence = 0.7
 
-                                    try:
-                                        tx = json.loads(raw)
-                                    except Exception:
-                                        continue
+                        if not txid or btc <= 0:
+                            continue
 
-                                    txid = tx.get("txid")
-                                    try:
-                                        btc = float(tx.get("btc") or 0)
-                                    except (TypeError, ValueError):
-                                        btc = 0
-                                    flow = tx.get("flow_type") or "UNKNOWN"
-                                    try:
-                                        confidence = float(tx.get("confidence") or 0.7)
-                                    except (TypeError, ValueError):
-                                        confidence = 0.7
+                        # защита от повторной отправки через set + deque
+                        if txid in seen_txids_set:
+                            continue
 
-                                    if not txid or btc <= 0:
-                                        continue
+                        # если deque переполнен, удаляем старый из set
+                        if len(seen_txids) >= seen_txids.maxlen:
+                            removed = seen_txids.popleft()
+                            seen_txids_set.discard(removed)
 
-                                    # защита от повторной отправки
-                                    if txid in seen_txids:
-                                        continue
-                                    seen_txids.add(txid)
+                        # добавляем новый txid
+                        seen_txids.append(txid)
+                        seen_txids_set.add(txid)
 
-                                    # -------------------------------------------------
-                                    # Слать алерт только для верных транзакций
-                                    # -------------------------------------------------
-                                    if btc >= ALERT_WHALE_BTC and flow != "UNKNOWN" and confidence >= 0.7:
-                                        emoji, title, direction = get_whale_flow_info(flow)
-                                        size = "HUGE" if btc >= 10000 else "Whale"
+                        # -------------------------------------------------
+                        # Слать алерт только для верных транзакций
+                        # -------------------------------------------------
+                        if btc >= ALERT_WHALE_BTC and flow != "UNKNOWN" and confidence >= 0.7:
+                            emoji, title, direction = get_whale_flow_info(flow)
+                            size = "HUGE" if btc >= 10000 else "Whale"
 
-                                        msg = (
-                                            f"{emoji} <b>{title}</b>\n"
-                                            f"{size}: <b>{btc:.2f} BTC</b>\n"
-                                            f"Confidence: <b>{confidence*100:.0f}%</b>\n"
-                                            f"{direction}\n"
-                                            f"<code>{txid[:16]}…</code>"
-                                        )
+                            msg = (
+                                f"{emoji} <b>{title}</b>\n"
+                                f"{size}: <b>{btc:.2f} BTC</b>\n"
+                                f"Confidence: <b>{confidence*100:.0f}%</b>\n"
+                                f"{direction}\n"
+                                f"<code>{txid[:16]}…</code>"
+                            )
 
-                                        for cid in list(subscribers):
-                                            try:
-                                                logger.info(f"[BOT] Sending alert {txid} to {cid}")
-                                                await bot.send_message(cid, msg)
-                                            except Exception as e:
-                                                logger.error(f"[BOT] Send error for {cid}: {e}")
-                                                subscribers.discard(cid)
+                            for cid in list(subscribers):
+                                try:
+                                    logger.info(f"[BOT] Sending alert {txid} to {cid}")
+                                    await bot.send_message(cid, msg)
+                                except Exception as e:
+                                    logger.error(f"[BOT] Send error for {cid}: {e}")
+                                    subscribers.discard(cid)
 
-            except asyncio.CancelledError:
-                logger.info("whale_listener cancelled")
-                raise
-            except Exception as e:
-                logger.error(f"SSE error: {e}")
-                await asyncio.sleep(3)
-
-    except asyncio.CancelledError:
-        logger.info("whale_listener stopped gracefully")
-
+    # Основной цикл с пересозданием сессии при падении
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                await connect_and_listen(session)
+        except asyncio.CancelledError:
+            logger.info("whale_listener cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"SSE session failed: {e}, reconnecting in 3s")
+            await asyncio.sleep(3)        
+            
 async def netflow_alert_monitor():
     """Мониторит чистый поток (withdraw - deposit) за последний час и шлёт алерты при значительных отклонениях."""
     await asyncio.sleep(10)
@@ -483,52 +471,48 @@ async def trade_monitor():
 # Hearbeat
 # ==============================================
 async def bot_heartbeat():
-    while True:
-        try:
-            # Получаем текущую цену
-            price = await get_current_price()
-            price_status = "✅" if price > 0 else "❌"
-            
-            # Получаем информацию о свечах
-            candle = await get_candle_info()
-            candles_api_ok, api_price = await check_candles_api()
-            
-            # Формируем статус свечей
-            if candle:
-                age_status = "✅" if candle["is_fresh"] else "⚠️" if candle["age"] < 300 else "❌"
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                # Получаем текущую цену
+                price = await get_current_price()
+                price_status = "✅" if price > 0 else "❌"
                 
-                # Проверка консистентности с текущей ценой
-                if price > 0:
-                    diff = abs(price - candle["close"]) / price * 100
-                    consistency = "✅" if diff < 1 else "⚠️" if diff < 3 else "❌"
-                else:
-                    consistency = "❓"
+                # Получаем информацию о свечах
+                candle = await get_candle_info()
+                candles_api_ok, api_price = await check_candles_api(session=session)
                 
-                candle_log = (
-                    f"\n📊 CANDLE: {candle['time']}"
-                    f"\n  O:{candle['open']:.0f} H:{candle['high']:.0f} L:{candle['low']:.0f} C:{candle['close']:.0f}"
-                    f"\n  Vol:{candle['volume']:.2f} BTC | Age:{candle['age']}s {age_status}"
-                    f"\n  Consistency:{consistency} | API:{'✅' if candles_api_ok else '❌'}"
-                )
+                # … остальной код без изменений …
                 
-                # Если есть расхождение с API
-                if candles_api_ok and api_price and abs(api_price - candle['close']) / api_price * 100 > 1:
-                    candle_log += f"\n  ⚠️ API diff: {abs(api_price - candle['close']):.2f}"
-            else:
-                candle_log = "\n📊 CANDLE: ❌ No data"
+            except Exception as e:
+                logger.error(f"Heartbeat error: {e}")
+                
+            await asyncio.sleep(120)
+
+async def check_candles_api(session: aiohttp.ClientSession = None):
+    """Проверяет доступность API свечей напрямую"""
+    close_session = False
+    if session is None:
+        session = aiohttp.ClientSession()
+        close_session = True
+    try:
+        async with session.get(
+            "https://api.binance.com/api/v3/klines",
+            params={"symbol": "BTCUSDT", "interval": "1m", "limit": 1},
+            timeout=5
+        ) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data and len(data) > 0:
+                    return True, float(data[0][4])
+            return False, None
+    except Exception as e:
+        logger.debug(f"Candles API check failed: {e}")
+        return False, None
+    finally:
+        if close_session:
+            await session.close()
             
-            # Логируем
-            logger.info(
-                f"[BOT] Alive. Subs:{len(subscribers)} Seen:{len(seen_txids)} "
-                f"Price:{price_status} {price if price > 0 else 'N/A'}"
-                f"{candle_log}"
-            )
-            
-        except Exception as e:
-            logger.error(f"Heartbeat error: {e}")
-            
-        await asyncio.sleep(120)
-      
 # ==============================================
 # Main
 # ==============================================

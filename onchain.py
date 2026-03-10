@@ -12,6 +12,7 @@ from logger import get_logger
 
 logger = get_logger(__name__)
 
+MIN_TRACK_BTC = Config.MIN_TRACK_BTC
 MIN_WHALE_BTC = Config.MIN_WHALE_BTC
 ALERT_WHALE_BTC = Config.ALERT_WHALE_BTC
 SATOSHI = 100_000_000
@@ -390,7 +391,7 @@ def process_tx(tx, cursor, cluster_cache):
     outputs = get_output_map(tx)
     total = sum(outputs.values())
 
-    if total < MIN_WHALE_BTC:
+    if total < MIN_TRACK_BTC:
         return
 
     store_tx_io(txid, inputs, outputs, cursor)
@@ -569,7 +570,7 @@ def process_tx(tx, cursor, cluster_cache):
 
         bucket = now - (now % 3600)
 
-        if flow_type in ("DEPOSIT", "WITHDRAW", "INTERNAL"):
+        if flow_type in ("DEPOSIT", "WITHDRAW", "INTERNAL") and flow_btc >= MIN_WHALE_BTC:
 
             if flow_type == "DEPOSIT":
                 cid = to_c
