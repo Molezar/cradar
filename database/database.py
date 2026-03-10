@@ -39,6 +39,9 @@ def get_db(as_dict=True, retries=3, delay=0.3):
 
 
 def init_db():
+    print("Python sqlite3 module version:", sqlite3.version)
+    print("SQLite library version:", sqlite3.sqlite_version)
+
     conn = get_db()
     c = conn.cursor()
 

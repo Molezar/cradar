@@ -1,4 +1,4 @@
-#onchain.py
+# onchain.py
 import time
 import json
 import asyncio
@@ -185,7 +185,7 @@ def behavioral_to_exchange(cluster_id, cursor, now):
     if (
         multi_input_count >= 5
         or sweep_count >= 5
-        or fanout_count >= 3
+        or fanout_count >= 2
         or deposit_pattern >= 5
     ):
 
@@ -205,7 +205,7 @@ def behavioral_to_exchange(cluster_id, cursor, now):
 # ==============================================
 # Flow classification
 # ==============================================
-
+_cluster_type_cache = {}
 def classify_flow(inputs, outputs, cursor, cache=None):
 
     in_exchange = {}
@@ -215,22 +215,29 @@ def classify_flow(inputs, outputs, cursor, cache=None):
 
     cluster_cache = cache if cache is not None else {}
 
+    # ===== входящие кластеры =====
     for addr, btc in inputs.items():
 
         cid, _ = resolve_cluster(addr, cursor, cluster_cache)
         cid = _cid(cid)
 
         if cid:
-            row = cursor.execute(
-                "SELECT cluster_type FROM clusters WHERE id=?",
-                (cid,)
-            ).fetchone()
-
-            if row and row["cluster_type"] == "EXCHANGE":
+            if cid in _cluster_type_cache:
+                cluster_type = _cluster_type_cache[cid]
+            else:
+                row = cursor.execute(
+                    "SELECT cluster_type FROM clusters WHERE id=?",
+                    (cid,)
+                ).fetchone()
+                cluster_type = row["cluster_type"] if row else None
+                _cluster_type_cache[cid] = cluster_type
+        
+            if cluster_type == "EXCHANGE":
                 in_exchange[cid] = in_exchange.get(cid, 0) + btc
         else:
             unknown_inputs[addr] = btc
 
+    # ===== исходящие кластеры =====
     for addr, btc in outputs.items():
 
         cached = cluster_cache.get(addr)
@@ -242,12 +249,17 @@ def classify_flow(inputs, outputs, cursor, cache=None):
             cid = _cid(cid)
 
         if cid:
-            row = cursor.execute(
-                "SELECT cluster_type FROM clusters WHERE id=?",
-                (cid,)
-            ).fetchone()
+            if cid in _cluster_type_cache:
+                cluster_type = _cluster_type_cache[cid]
+            else:
+                row = cursor.execute(
+                    "SELECT cluster_type FROM clusters WHERE id=?",
+                    (cid,)
+                ).fetchone()
+                cluster_type = row["cluster_type"] if row else None
+                _cluster_type_cache[cid] = cluster_type
 
-            if row and row["cluster_type"] == "EXCHANGE":
+            if cluster_type == "EXCHANGE":
                 out_exchange[cid] = out_exchange.get(cid, 0) + btc
         else:
             unknown_outputs[addr] = btc
@@ -255,17 +267,12 @@ def classify_flow(inputs, outputs, cursor, cache=None):
     flows = []
 
     for cid, vol in in_exchange.items():
-
         if unknown_outputs and is_exchange_withdraw(outputs):
-    
             largest = max(outputs.values())
-    
             flows.append((cid, None, "WITHDRAW", largest))
 
     for cid, vol in out_exchange.items():
-
         if unknown_inputs and not is_exchange_withdraw(outputs):
-    
             flows.append((None, cid, "DEPOSIT", vol))
 
     for cid_in, vol in in_exchange.items():
@@ -290,13 +297,13 @@ def heuristic_flow_classification(inputs, outputs, total_btc):
     if num_in <= 2 and num_out >= 2 and output_ratio > 0.7:
         flows.append((None, None, "POSSIBLE_EXCHANGE_WITHDRAW", largest_output))
 
-    # exchange deposit pattern
-    elif num_in >= 3 and num_out <= 2:
-        flows.append((None, None, "POSSIBLE_EXCHANGE_DEPOSIT", total_btc))
-
-    # consolidation
+   # consolidation
     elif num_in >= 5 and num_out <= 2:
         flows.append((None, None, "CONSOLIDATION", total_btc))
+
+    # exchange deposit
+    elif num_in >= 3 and num_out <= 2:
+        flows.append((None, None, "POSSIBLE_EXCHANGE_DEPOSIT", total_btc))
 
     elif num_in > 1 and num_out > 1:
         flows.append((None, None, "INTERNAL", total_btc))
@@ -321,6 +328,50 @@ def is_exchange_withdraw(outputs):
 
     return False
 
+def detect_exchange_consolidation(inputs, outputs):
+
+    if len(inputs) >= 30 and len(outputs) == 1:
+        return True
+
+    total = sum(inputs.values())
+
+    if len(inputs) >= 20 and total >= 20:
+        return True
+
+    return False
+
+# ==============================================
+# Change address detection
+# ==============================================
+
+def detect_change_address(inputs, outputs):
+    """
+    Detect potential change address in a transaction.
+    Heuristic: single output that is small and not seen in inputs.
+    """
+    if not inputs or not outputs:
+        return None
+
+    input_addrs = set(inputs.keys())
+    output_addrs = set(outputs.keys())
+
+    # candidate outputs not in input addresses
+    candidates = output_addrs - input_addrs
+
+    if not candidates:
+        return None
+
+    total_out = sum(outputs.values())
+
+    # find smallest candidate
+    smallest_addr = min(candidates, key=lambda a: outputs[a])
+    smallest_val = outputs[smallest_addr]
+
+    # simple heuristic: if smallest output < 10% of total, consider as change
+    if smallest_val < 0.1 * total_out:
+        return smallest_addr
+
+    return None
 
 # ==============================================
 # TX processing
@@ -337,7 +388,6 @@ def process_tx(tx, cursor, cluster_cache):
 
     inputs = get_input_map(tx)
     outputs = get_output_map(tx)
-
     total = sum(outputs.values())
 
     if total < MIN_WHALE_BTC:
@@ -347,14 +397,79 @@ def process_tx(tx, cursor, cluster_cache):
 
     now = int(time.time())
 
+    # ======================================
+    # Exchange consolidation detection
+    # ======================================
+
+    if detect_exchange_consolidation(inputs, outputs):
+
+        base_cluster = create_behavioral_cluster(
+            list(inputs.keys())[0], cursor, cluster_cache
+        )
+
+        for addr in inputs.keys():
+
+            cursor.execute("""
+                INSERT OR IGNORE INTO cluster_addresses
+                (address, cluster_id, confidence, first_seen, last_seen)
+                VALUES (?, ?, ?, ?, ?)
+            """, (addr, base_cluster, 0.7, now, now))
+
+            cluster_cache[addr] = (base_cluster, 0.7)
+
+    # ======================================
+    # Fanout clustering (exchange hotwallet)
+    # ======================================
+
+    if len(outputs) >= 10 and total >= 5:
+
+        base_cluster = create_behavioral_cluster(
+            list(outputs.keys())[0], cursor, cluster_cache
+        )
+
+        for addr in outputs.keys():
+
+            cursor.execute("""
+                INSERT OR IGNORE INTO cluster_addresses
+                (address, cluster_id, confidence, first_seen, last_seen)
+                VALUES (?, ?, ?, ?, ?)
+            """, (addr, base_cluster, 0.5, now, now))
+
+            cluster_cache[addr] = (base_cluster, 0.5)
+
+    # ======================================
+    # Change address detection
+    # ======================================
+
+    change_addr = detect_change_address(inputs, outputs)
+
+    if change_addr:
+
+        in_addr = list(inputs.keys())[0]
+
+        cid, _ = resolve_cluster(in_addr, cursor, cluster_cache)
+        cid = _cid(cid)
+
+        if cid:
+
+            cursor.execute("""
+                INSERT OR IGNORE INTO cluster_addresses
+                (address, cluster_id, confidence, first_seen, last_seen)
+                VALUES (?, ?, ?, ?, ?)
+            """, (change_addr, cid, 0.8, now, now))
+
+            cluster_cache[change_addr] = (cid, 0.8)
+
+    # ======================================
+    # Multi-input clustering
+    # ======================================
+
     input_addrs = list(inputs.keys())
     addr_to_cluster = {}
 
     for addr in input_addrs:
-
         cid, _ = resolve_cluster(addr, cursor, cluster_cache)
         cid = _cid(cid)
-
         addr_to_cluster[addr] = cid
 
     if input_addrs and len(input_addrs) >= 2 and total >= 5:
@@ -392,13 +507,21 @@ def process_tx(tx, cursor, cluster_cache):
 
             cid = _cid(cid)
 
-            row = cursor.execute(
-                "SELECT cluster_type FROM clusters WHERE id=?",
-                (cid,)
-            ).fetchone()
-
-            if row and row["cluster_type"] == "BEHAVIORAL":
+            cluster_type = _cluster_type_cache.get(cid)
+            if not cluster_type:
+                row = cursor.execute(
+                    "SELECT cluster_type FROM clusters WHERE id=?",
+                    (cid,)
+                ).fetchone()
+                cluster_type = row["cluster_type"] if row else None
+                _cluster_type_cache[cid] = cluster_type
+            
+            if cluster_type == "BEHAVIORAL":
                 behavioral_to_exchange(cid, cursor, now)
+
+    # ======================================
+    # Update output address activity
+    # ======================================
 
     for addr in outputs.keys():
 
@@ -407,6 +530,10 @@ def process_tx(tx, cursor, cluster_cache):
 
         if cid:
             update_address_seen(addr, cursor)
+
+    # ======================================
+    # Flow classification
+    # ======================================
 
     flows = classify_flow(inputs, outputs, cursor, cluster_cache)
 
@@ -439,17 +566,16 @@ def process_tx(tx, cursor, cluster_cache):
         # ======================================
         # Exchange flow aggregation (1h bucket)
         # ======================================
+
         bucket = now - (now % 3600)
 
         if flow_type in ("DEPOSIT", "WITHDRAW", "INTERNAL"):
 
             if flow_type == "DEPOSIT":
                 cid = to_c
-        
             elif flow_type == "WITHDRAW":
                 cid = from_c
-        
-            else:  # INTERNAL
+            else:
                 cid = from_c
 
             if cid:
@@ -459,7 +585,7 @@ def process_tx(tx, cursor, cluster_cache):
                     ON CONFLICT(ts, cluster_id, flow_type)
                     DO UPDATE SET btc = btc + excluded.btc
                 """, (bucket, cid, flow_type, flow_btc))
-        
+
         if flow_btc >= ALERT_WHALE_BTC:
 
             event = {
@@ -477,7 +603,6 @@ def process_tx(tx, cursor, cluster_cache):
             logger.info(
                 f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}"
             )
-
 
 # ==============================================
 # WebSocket Worker
