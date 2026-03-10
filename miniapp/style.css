@@ -42,12 +42,12 @@ h1 {
     padding: 4px 0;
 }
 
-/* Обычная транзакция — голубая */
+/* Обычная транзакция */
 .whale {
     color: #00cfff;
 }
 
-/* Крупная транзакция — оранжевая */
+/* Крупная транзакция */
 .whale.huge {
     color: #ff8c00;
     font-weight: bold;
@@ -71,15 +71,19 @@ h1 {
     color: #ffd700;
 }
 
-.flow.exchange {
-    color: #ff66ff;
+.flow.possible_exchange_withdraw {
+    color: #00ffaa;
 }
 
-.flow.alert {
-    color: #ff8c00;
+.flow.possible_exchange_deposit {
+    color: #ff5c5c;
 }
 
-.flow.other {
+.flow.consolidation {
+    color: #66ccff;
+}
+
+.flow.transfer {
     color: #999;
 }
 

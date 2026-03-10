@@ -242,11 +242,17 @@ def classify_flow(inputs, outputs, cursor, cache=None):
     flows = []
 
     for cid, vol in in_exchange.items():
-        if unknown_outputs:
-            flows.append((cid, None, "WITHDRAW", vol))
+
+        if unknown_outputs and is_exchange_withdraw(outputs):
+    
+            largest = max(outputs.values())
+    
+            flows.append((cid, None, "WITHDRAW", largest))
 
     for cid, vol in out_exchange.items():
-        if unknown_inputs:
+
+        if unknown_inputs and not is_exchange_withdraw(outputs):
+    
             flows.append((None, cid, "DEPOSIT", vol))
 
     for cid_in, vol in in_exchange.items():
@@ -255,7 +261,6 @@ def classify_flow(inputs, outputs, cursor, cache=None):
 
     return flows
 
-
 def heuristic_flow_classification(inputs, outputs, total_btc):
 
     flows = []
@@ -263,13 +268,22 @@ def heuristic_flow_classification(inputs, outputs, total_btc):
     num_in = len(inputs)
     num_out = len(outputs)
 
+    largest_output = max(outputs.values())
+    output_ratio = largest_output / total_btc if total_btc else 0
+
     LARGE_TX_THRESHOLD = 10
 
-    if num_in == 1 and num_out > 1 and total_btc >= LARGE_TX_THRESHOLD:
-        flows.append((None, None, "POSSIBLE_EXCHANGE_WITHDRAW", total_btc))
+    # exchange withdraw pattern
+    if num_in <= 2 and num_out >= 2 and output_ratio > 0.7:
+        flows.append((None, None, "POSSIBLE_EXCHANGE_WITHDRAW", largest_output))
 
-    elif num_in > 1 and num_out == 1 and total_btc >= LARGE_TX_THRESHOLD:
+    # exchange deposit pattern
+    elif num_in >= 3 and num_out <= 2:
         flows.append((None, None, "POSSIBLE_EXCHANGE_DEPOSIT", total_btc))
+
+    # consolidation
+    elif num_in >= 5 and num_out <= 2:
+        flows.append((None, None, "CONSOLIDATION", total_btc))
 
     elif num_in > 1 and num_out > 1:
         flows.append((None, None, "INTERNAL", total_btc))
@@ -278,6 +292,21 @@ def heuristic_flow_classification(inputs, outputs, total_btc):
         flows.append((None, None, "TRANSFER", total_btc))
 
     return flows
+
+def is_exchange_withdraw(outputs):
+
+    vals = list(outputs.values())
+
+    if len(vals) < 2:
+        return False
+
+    largest = max(vals)
+    second = sorted(vals)[-2]
+
+    if largest > second * 3:
+        return True
+
+    return False
 
 
 # ==============================================
