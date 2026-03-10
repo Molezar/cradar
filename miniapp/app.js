@@ -1,4 +1,3 @@
-// app.js
 let lastPrice = null;
 const ALERT_WHALE_BTC = window.ALERT_WHALE_BTC || 1000;
 
@@ -40,12 +39,13 @@ function flowLabel(flow) {
 async function load() {
     try {
 
-        const [wj, pj, pcj, volj, flowj] = await Promise.all([
+        const [wj, pj, pcj, volj, flowj, rawj] = await Promise.all([
             fetch("/whales?t=" + Date.now()).then(r => r.json()),
             fetch("/prediction?t=" + Date.now()).then(r => r.json()),
             fetch("/price?t=" + Date.now()).then(r => r.json()),
             fetch("/volumes?t=" + Date.now()).then(r => r.json()),
-            fetch("/exchange_flow?window=600&t=" + Date.now()).then(r => r.json())
+            fetch("/exchange_flow?window=600&t=" + Date.now()).then(r => r.json()),
+            fetch("/exchange_flow_raw?limit=50&t=" + Date.now()).then(r => r.json())
         ]);
 
         // --- Whales List ---
@@ -132,7 +132,28 @@ async function load() {
             </div>`;
         }
 
+        flowHtml += "</div>";
+
         document.getElementById("exchange_flow").innerHTML = flowHtml;
+
+        // --- RAW Exchange Flow ---
+        let rawHtml = "<div class='volumes'><div class='pred'>=== RAW EXCHANGE FLOW ===</div>";
+
+        for (const r of rawj.rows || []) {
+
+            const color = r.flow_type === "DEPOSIT" ? "#ff5c5c" : "#00ffaa";
+            const arrow = r.flow_type === "DEPOSIT" ? "→" : "←";
+
+            rawHtml += `<div style="color:${color}">
+                ${fmtTime(r.ts)} &nbsp;
+                Cluster ${r.cluster_id} &nbsp;
+                ${arrow} ${r.btc.toFixed(2)} BTC
+            </div>`;
+        }
+
+        rawHtml += "</div>";
+
+        document.getElementById("exchange_flow_raw").innerHTML = rawHtml;
 
     } catch (e) {
 

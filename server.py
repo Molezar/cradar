@@ -446,6 +446,51 @@ def exchange_flow():
     finally:
         if conn:
             conn.close()
+
+
+@app.route("/exchange_flow_raw")
+def exchange_flow_raw():
+    """
+    Debug endpoint.
+    Возвращает реальные записи из exchange_flow (DEPOSIT/WITHDRAW)
+    чтобы проверить есть ли данные.
+
+    Параметры:
+        ?limit=100
+    """
+
+    limit = int(request.args.get("limit", 100))
+
+    conn = None
+    try:
+        conn = get_db()
+
+        rows = conn.execute("""
+            SELECT
+                ts,
+                cluster_id,
+                flow_type,
+                btc
+            FROM exchange_flow
+            WHERE flow_type IN ('DEPOSIT', 'WITHDRAW')
+            ORDER BY ts DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+
+        result = [dict(r) for r in rows]
+
+        return jsonify({
+            "count": len(result),
+            "rows": result
+        })
+
+    except Exception:
+        logger.exception("Exchange flow raw endpoint error")
+        return jsonify({"error": "Internal server error"}), 500
+
+    finally:
+        if conn:
+            conn.close()
         
 
 @app.route("/price")

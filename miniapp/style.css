@@ -153,3 +153,21 @@ h1 {
 #exchange_flow div {
     padding: 2px 0;
 }
+
+/* RAW Exchange Flow */
+#exchange_flow_raw {
+    margin: 15px 0;
+    padding: 8px;
+    background: #1a1a1a;
+    border-radius: 4px;
+}
+
+#exchange_flow_raw .pred {
+    color: #ff9900;
+    font-weight: bold;
+    margin-bottom: 6px;
+}
+
+#exchange_flow_raw div {
+    padding: 2px 0;
+}
