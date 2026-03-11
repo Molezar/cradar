@@ -3,7 +3,7 @@ import time
 import json
 import asyncio
 import queue
-from collections import deque
+from collections import deque, OrderedDict
 import websockets
 
 from database.database import get_db
@@ -19,8 +19,9 @@ SATOSHI = 100_000_000
 MEMPOOL_WS = "wss://mempool.emzy.de/api/v1/ws"
 
 _events = queue.Queue()
-_seen_txids = deque(maxlen=100_000)
-
+_seen_txids = set()
+_seen_txids_queue = deque()
+SEEN_TX_LIMIT = 500000
 
 def get_event_queue():
     return _events
@@ -55,6 +56,9 @@ def resolve_cluster(address, cursor, cache=None):
 
     if cache is not None:
         cache[address] = result
+        
+        if len(cache) > 500000:
+            cache.clear()
 
     return result
 
@@ -70,6 +74,14 @@ def update_address_seen(address, cursor):
 def create_behavioral_cluster(address, cursor, cache=None):
     now = int(time.time())
 
+    existing = cursor.execute("""
+        SELECT cluster_id FROM cluster_addresses
+        WHERE address=?
+    """, (address,)).fetchone()
+
+    if existing:
+        return existing["cluster_id"]
+        
     cursor.execute("""
         INSERT INTO clusters
         (cluster_type, confidence, size, created_at, last_updated)
@@ -89,6 +101,45 @@ def create_behavioral_cluster(address, cursor, cache=None):
 
     return cluster_id
 
+
+# ==============================================
+# Cluster merge
+# ==============================================
+
+def merge_clusters(target_cluster, source_cluster, cursor, cache=None):
+
+    if target_cluster == source_cluster:
+        return
+
+    cursor.execute("""
+        UPDATE cluster_addresses
+        SET cluster_id=?
+        WHERE cluster_id=?
+    """, (target_cluster, source_cluster))
+        
+    cursor.execute("""
+        DELETE FROM clusters
+        WHERE id=?
+    """, (source_cluster,))
+        
+    cursor.execute("""
+        UPDATE clusters
+        SET size = (
+            SELECT COUNT(*) FROM cluster_addresses
+            WHERE cluster_id=?
+        )
+        WHERE id=?
+    """, (target_cluster, target_cluster))
+
+    if cache is not None:
+        for addr, data in list(cache.items()):
+            if _cid(data[0]) == source_cluster:
+                cache[addr] = (target_cluster, data[1])
+                
+    _cluster_type_cache.pop(source_cluster, None)
+    _cluster_type_cache.pop(target_cluster, None)
+    logger.info(f"[CLUSTER] merged {source_cluster} → {target_cluster}")
+    
 
 # ==============================================
 # Parsing
@@ -206,7 +257,9 @@ def behavioral_to_exchange(cluster_id, cursor, now):
 # ==============================================
 # Flow classification
 # ==============================================
-_cluster_type_cache = {}
+_cluster_type_cache = OrderedDict()
+CACHE_LIMIT = 200000
+
 def classify_flow(inputs, outputs, cursor, cache=None):
 
     in_exchange = {}
@@ -232,7 +285,8 @@ def classify_flow(inputs, outputs, cursor, cache=None):
                 ).fetchone()
                 cluster_type = row["cluster_type"] if row else None
                 _cluster_type_cache[cid] = cluster_type
-        
+                if len(_cluster_type_cache) > CACHE_LIMIT:
+                    _cluster_type_cache.popitem(last=False)
             if cluster_type == "EXCHANGE":
                 in_exchange[cid] = in_exchange.get(cid, 0) + btc
         else:
@@ -259,7 +313,9 @@ def classify_flow(inputs, outputs, cursor, cache=None):
                 ).fetchone()
                 cluster_type = row["cluster_type"] if row else None
                 _cluster_type_cache[cid] = cluster_type
-
+                if len(_cluster_type_cache) > CACHE_LIMIT:
+                    _cluster_type_cache.popitem(last=False)
+    
             if cluster_type == "EXCHANGE":
                 out_exchange[cid] = out_exchange.get(cid, 0) + btc
         else:
@@ -289,7 +345,7 @@ def heuristic_flow_classification(inputs, outputs, total_btc):
     num_in = len(inputs)
     num_out = len(outputs)
 
-    largest_output = max(outputs.values())
+    largest_output = max(outputs.values()) if outputs else 0
     output_ratio = largest_output / total_btc if total_btc else 0
 
     # exchange withdraw pattern
@@ -320,7 +376,8 @@ def is_exchange_withdraw(outputs):
         return False
 
     largest = max(vals)
-    second = sorted(vals)[-2]
+    vals.remove(largest)
+    second = max(vals)
 
     if largest > second * 3:
         return True
@@ -339,6 +396,50 @@ def detect_exchange_consolidation(inputs, outputs):
 
     return False
 
+
+# ==============================================
+# Hot wallet detection
+# ==============================================
+
+def detect_hot_wallet(inputs, outputs):
+
+    if len(inputs) != 1:
+        return False
+
+    if len(outputs) < 15:
+        return False
+
+    total = sum(outputs.values())
+
+    if total < 50:
+        return False
+
+    largest = max(outputs.values())
+
+    if largest > total * 0.5:
+        return False
+
+    return True
+    
+
+# ==============================================
+# Exchange deposit detection
+# ==============================================
+
+def detect_exchange_deposit(inputs, outputs):
+
+    if len(inputs) < 10:
+        return False
+
+    if len(outputs) != 1:
+        return False
+
+    total = sum(inputs.values())
+
+    if total < 20:
+        return False
+
+    return True
 
 # ==============================================
 # Change address detection
@@ -367,8 +468,8 @@ def detect_change_address(inputs, outputs):
     smallest_addr = min(candidates, key=lambda a: outputs[a])
     smallest_val = outputs[smallest_addr]
 
-    # simple heuristic: if smallest output < 3% of total, consider as change
-    if smallest_val < 0.03 * total_out:
+    # simple heuristic: if smallest output < 10% of total, consider as change
+    if smallest_val < 0.2 * total_out:
         return smallest_addr
 
     return None
@@ -403,7 +504,7 @@ def detect_peel_chain(inputs, outputs):
     # typical peel pattern:
     # large output continues chain
     # small output is payout
-    if ratio >= 0.8 and small_val >= 0.1:
+    if ratio >= 0.7 and small_val >= 0.1:
         return large_addr
 
     return None
@@ -420,7 +521,12 @@ def process_tx(tx, cursor, cluster_cache):
     if not txid or txid in _seen_txids:
         return
 
-    _seen_txids.append(txid)
+    _seen_txids.add(txid)
+    _seen_txids_queue.append(txid)
+    
+    if len(_seen_txids_queue) > SEEN_TX_LIMIT:
+        old = _seen_txids_queue.popleft()
+        _seen_txids.discard(old)
 
     inputs = get_input_map(tx)
     outputs = get_output_map(tx)
@@ -456,10 +562,30 @@ def process_tx(tx, cursor, cluster_cache):
             cluster_cache[addr] = (base_cluster, 0.7)
 
     # ======================================
+    # Exchange deposit detection
+    # ======================================
+    
+    if detect_exchange_deposit(inputs, outputs):
+    
+        out_addr = list(outputs.keys())[0]
+    
+        cid, _ = resolve_cluster(out_addr, cursor, cluster_cache)
+        cid = _cid(cid)
+    
+        if not cid:
+            cid = create_behavioral_cluster(out_addr, cursor, cluster_cache)
+    
+        cursor.execute("""
+            UPDATE clusters
+            SET cluster_type=?, confidence=?
+            WHERE id=?
+        """, ("EXCHANGE", 0.9, cid))
+    
+        logger.info(f"[CLUSTER] Exchange deposit wallet {cid}")
+    
+    # ======================================
     # Fanout clustering (exchange hotwallet)
     # ======================================
-
-    # Fanout clustering (exchange hotwallet)
 
     # защита от self churn
     if any(addr in inputs for addr in outputs):
@@ -474,25 +600,51 @@ def process_tx(tx, cursor, cluster_cache):
             and total >= 50
             and largest_output < total * 0.8
         ):
-    
-            small_outputs = [v for v in outputs.values() if v < 0.01]
 
-            if len(small_outputs) <= 3:
+            existing_clusters = set()
+
+            for addr in outputs.keys():
+                cid, _ = resolve_cluster(addr, cursor, cluster_cache)
+                cid = _cid(cid)
+                if cid:
+                    existing_clusters.add(cid)
             
+            if existing_clusters:
+                base_cluster = min(existing_clusters)
+            else:
                 base_cluster = create_behavioral_cluster(
                     list(outputs.keys())[0], cursor, cluster_cache
                 )
-        
-                for addr in outputs.keys():
-        
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO cluster_addresses
-                        (address, cluster_id, confidence, first_seen, last_seen)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (addr, base_cluster, 0.5, now, now))
-        
-                    cluster_cache[addr] = (base_cluster, 0.5)
+            
+            for addr in outputs.keys():
+            
+                cursor.execute("""
+                    INSERT OR IGNORE INTO cluster_addresses
+                    (address, cluster_id, confidence, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (addr, base_cluster, 0.5, now, now))
+            
+                cluster_cache[addr] = (base_cluster, 0.5)
 
+
+    # ======================================
+    # Hot wallet detection
+    # ======================================
+    
+    if detect_hot_wallet(inputs, outputs):
+    
+        base_cluster = create_behavioral_cluster(
+            list(outputs.keys())[0], cursor, cluster_cache
+        )
+    
+        cursor.execute("""
+            UPDATE clusters
+            SET cluster_type=?, confidence=?
+            WHERE id=?
+        """, ("EXCHANGE", 0.85, base_cluster))
+    
+        logger.info(f"[CLUSTER] Hot wallet detected {base_cluster}")
+    
     # ======================================
     # Change address detection
     # ======================================
@@ -553,6 +705,21 @@ def process_tx(tx, cursor, cluster_cache):
 
     if input_addrs and len(input_addrs) >= 3 and total >= 5:
 
+        # ======================================
+        # Merge clusters if multiple detected
+        # ======================================
+        
+        cluster_ids = list(set(cid for cid in addr_to_cluster.values() if cid))
+        
+        if len(cluster_ids) > 1:
+        
+            base = min(cluster_ids)
+        
+            for cid in cluster_ids:
+                cid = _cid(cid)
+                if cid != base:
+                    merge_clusters(base, cid, cursor, cluster_cache)
+        
         cluster_ids = [cid for cid in addr_to_cluster.values() if cid]
 
         if cluster_ids:
@@ -595,6 +762,9 @@ def process_tx(tx, cursor, cluster_cache):
                 cluster_type = row["cluster_type"] if row else None
                 _cluster_type_cache[cid] = cluster_type
             
+                if len(_cluster_type_cache) > CACHE_LIMIT:
+                    _cluster_type_cache.popitem(last=False)
+                    
             if cluster_type == "BEHAVIORAL":
                 behavioral_to_exchange(cid, cursor, now)
 
