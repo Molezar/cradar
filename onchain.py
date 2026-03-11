@@ -174,7 +174,7 @@ def behavioral_to_exchange(cluster_id, cursor, now):
             (txid,)
         ).fetchall()
 
-        if len(outputs) > 2:
+        if len(outputs) >= 5:
             sweep_count += 1
             
         if len(outputs) >= 10:
@@ -292,13 +292,11 @@ def heuristic_flow_classification(inputs, outputs, total_btc):
     largest_output = max(outputs.values())
     output_ratio = largest_output / total_btc if total_btc else 0
 
-    LARGE_TX_THRESHOLD = 10
-
     # exchange withdraw pattern
     if num_in <= 2 and num_out >= 2 and output_ratio > 0.7:
         flows.append((None, None, "POSSIBLE_EXCHANGE_WITHDRAW", largest_output))
 
-   # consolidation
+    # consolidation
     elif num_in >= 5 and num_out <= 2:
         flows.append((None, None, "CONSOLIDATION", total_btc))
 
@@ -331,15 +329,16 @@ def is_exchange_withdraw(outputs):
 
 def detect_exchange_consolidation(inputs, outputs):
 
-    if len(inputs) >= 30 and len(outputs) == 1:
+    if len(inputs) >= 20 and len(outputs) == 1 and sum(inputs.values()) >= 50:
         return True
 
     total = sum(inputs.values())
 
-    if len(inputs) >= 20 and total >= 20:
+    if len(inputs) >= 25 and total >= 50:
         return True
 
     return False
+
 
 # ==============================================
 # Change address detection
@@ -368,12 +367,48 @@ def detect_change_address(inputs, outputs):
     smallest_addr = min(candidates, key=lambda a: outputs[a])
     smallest_val = outputs[smallest_addr]
 
-    # simple heuristic: if smallest output < 10% of total, consider as change
-    if smallest_val < 0.1 * total_out:
+    # simple heuristic: if smallest output < 3% of total, consider as change
+    if smallest_val < 0.03 * total_out:
         return smallest_addr
 
     return None
 
+
+# ==============================================
+# Peel chain detection
+# ==============================================
+
+def detect_peel_chain(inputs, outputs):
+
+    if len(inputs) != 1 or len(outputs) != 2:
+        return None
+
+    total = sum(outputs.values())
+    if total == 0:
+        return None
+
+    vals = list(outputs.items())
+    vals.sort(key=lambda x: x[1], reverse=True)
+
+    large_addr, large_val = vals[0]
+    small_addr, small_val = vals[1]
+    
+    input_addr = list(inputs.keys())[0]
+    
+    if large_addr == input_addr:
+        return None
+
+    ratio = large_val / total
+
+    # typical peel pattern:
+    # large output continues chain
+    # small output is payout
+    if ratio >= 0.8 and small_val >= 0.1:
+        return large_addr
+
+    return None
+    
+    
 # ==============================================
 # TX processing
 # ==============================================
@@ -389,6 +424,8 @@ def process_tx(tx, cursor, cluster_cache):
 
     inputs = get_input_map(tx)
     outputs = get_output_map(tx)
+    if len(outputs) > 200:
+        return
     total = sum(outputs.values())
 
     if total < MIN_TRACK_BTC:
@@ -422,21 +459,39 @@ def process_tx(tx, cursor, cluster_cache):
     # Fanout clustering (exchange hotwallet)
     # ======================================
 
-    if len(outputs) >= 10 and total >= 5:
+    # Fanout clustering (exchange hotwallet)
 
-        base_cluster = create_behavioral_cluster(
-            list(outputs.keys())[0], cursor, cluster_cache
-        )
+    # защита от self churn
+    if any(addr in inputs for addr in outputs):
+        pass
+    else:
+    
+        largest_output = max(outputs.values()) if outputs else 0
+    
+        if (
+            len(inputs) == 1
+            and 10 <= len(outputs) <= 100
+            and total >= 50
+            and largest_output < total * 0.8
+        ):
+    
+            small_outputs = [v for v in outputs.values() if v < 0.01]
 
-        for addr in outputs.keys():
-
-            cursor.execute("""
-                INSERT OR IGNORE INTO cluster_addresses
-                (address, cluster_id, confidence, first_seen, last_seen)
-                VALUES (?, ?, ?, ?, ?)
-            """, (addr, base_cluster, 0.5, now, now))
-
-            cluster_cache[addr] = (base_cluster, 0.5)
+            if len(small_outputs) <= 3:
+            
+                base_cluster = create_behavioral_cluster(
+                    list(outputs.keys())[0], cursor, cluster_cache
+                )
+        
+                for addr in outputs.keys():
+        
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO cluster_addresses
+                        (address, cluster_id, confidence, first_seen, last_seen)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (addr, base_cluster, 0.5, now, now))
+        
+                    cluster_cache[addr] = (base_cluster, 0.5)
 
     # ======================================
     # Change address detection
@@ -462,6 +517,29 @@ def process_tx(tx, cursor, cluster_cache):
             cluster_cache[change_addr] = (cid, 0.8)
 
     # ======================================
+    # Peel chain clustering
+    # ======================================
+    
+    peel_addr = detect_peel_chain(inputs, outputs)
+    
+    if peel_addr:
+    
+        in_addr = list(inputs.keys())[0]
+    
+        cid, _ = resolve_cluster(in_addr, cursor, cluster_cache)
+        cid = _cid(cid)
+    
+        if cid:
+    
+            cursor.execute("""
+                INSERT OR IGNORE INTO cluster_addresses
+                (address, cluster_id, confidence, first_seen, last_seen)
+                VALUES (?, ?, ?, ?, ?)
+            """, (peel_addr, cid, 0.85, now, now))
+    
+            cluster_cache[peel_addr] = (cid, 0.85)
+    
+    # ======================================
     # Multi-input clustering
     # ======================================
 
@@ -473,7 +551,7 @@ def process_tx(tx, cursor, cluster_cache):
         cid = _cid(cid)
         addr_to_cluster[addr] = cid
 
-    if input_addrs and len(input_addrs) >= 2 and total >= 5:
+    if input_addrs and len(input_addrs) >= 3 and total >= 5:
 
         cluster_ids = [cid for cid in addr_to_cluster.values() if cid]
 
@@ -604,6 +682,7 @@ def process_tx(tx, cursor, cluster_cache):
             logger.info(
                 f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}"
             )
+
 
 # ==============================================
 # WebSocket Worker

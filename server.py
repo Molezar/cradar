@@ -11,7 +11,7 @@ import queue
 
 from config import Config
 from database.database import get_db, init_db
-from onchain import mempool_ws_worker, get_event_queue
+from onchain import mempool_ws_worker, get_event_queue, behavioral_to_exchange
 from cluster_engine import run_cluster_expansion
 from logger import get_logger
 
@@ -323,6 +323,49 @@ async def trainer():
 
         await asyncio.sleep(300)
 
+
+# ==============================================
+# BEHAVIORAL → EXCHANGE UPGRADE WORKER
+# ==============================================
+
+async def behavioral_upgrade_worker():
+
+    while True:
+        try:
+            now = int(time.time())
+
+            conn = None
+            try:
+                conn = get_db()
+                c = conn.cursor()
+
+                rows = c.execute("""
+                    SELECT id
+                    FROM clusters
+                    WHERE cluster_type='BEHAVIORAL'
+                """).fetchall()
+
+                upgraded = 0
+
+                for r in rows:
+                    cid = r["id"]
+
+                    if behavioral_to_exchange(cid, c, now):
+                        upgraded += 1
+
+                if upgraded:
+                    logger.info(f"[CLUSTER] Upgraded {upgraded} behavioral clusters")
+
+                conn.commit()
+
+            finally:
+                if conn:
+                    conn.close()
+
+        except Exception:
+            logger.exception("Behavioral upgrade worker error")
+
+        await asyncio.sleep(300)  # каждые 5 минут
 
 # ==============================================
 # API
@@ -651,6 +694,7 @@ def start_async_tasks_loop():
     loop.create_task(exchange_flow_sampler())
     loop.create_task(trainer())
     loop.create_task(mempool_ws_worker())
+    loop.create_task(behavioral_upgrade_worker())
     loop.run_forever()
 
 
