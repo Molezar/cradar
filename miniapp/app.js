@@ -127,9 +127,9 @@ async function load() {
                 if (Array.isArray(mpj.keyFlows) && mpj.keyFlows.length) {
                     mpHtml += "<div>Key Flows:</div>";
                     mpj.keyFlows.forEach(f => {
-                        const arrow = f.flow_type === "DEPOSIT" ? "←" :
-                                      f.flow_type === "WITHDRAW" ? "→" : "•";
-                        mpHtml += `<div style="margin-left: 12px;">Cluster ${f.cluster_id}: ${arrow} ${f.btc.toFixed(2)} BTC</div>`;
+                        const cls = f.btc < 0 ? "flow withdraw" : f.btc > 0 ? "flow deposit" : "flow transfer";
+                        const arrow = f.btc < 0 ? "→" : f.btc > 0 ? "←" : "•";
+                        mpHtml += `<div style="margin-left: 12px;">Cluster ${f.cluster_id}: <span class="${cls}">${arrow} ${Math.abs(f.btc).toFixed(2)} BTC</span></div>`;
                     });
                 }
         
