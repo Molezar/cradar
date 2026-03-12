@@ -231,9 +231,9 @@ def behavioral_to_exchange(cluster_id, cursor, now):
             deposit_pattern += 1
 
     if (
-        multi_input_count >= 5
+        multi_input_count >= 20
         or sweep_count >= 5
-        or fanout_count >= 2
+        or fanout_count >= 10
         or deposit_pattern >= 5
     ):
 
@@ -319,18 +319,44 @@ def classify_flow(inputs, outputs, cursor, cache=None):
 
     flows = []
 
-    for cid, vol in in_exchange.items():
-        if unknown_outputs and is_exchange_withdraw(outputs):
-            largest = max(outputs.values())
-            flows.append((cid, None, "WITHDRAW", largest))
-
-    for cid, vol in out_exchange.items():
-        if unknown_inputs and not is_exchange_withdraw(outputs):
-            flows.append((None, cid, "DEPOSIT", vol))
-
+    # ======================================
+    # INTERNAL exchange flow
+    # ======================================
+    
     for cid_in, vol in in_exchange.items():
-        for cid_out in out_exchange:
-            flows.append((cid_in, cid_out, "INTERNAL", vol))
+        for cid_out, vol_out in out_exchange.items():
+            flows.append((cid_in, cid_out, "INTERNAL", min(vol, vol_out)))
+    
+    
+    # ======================================
+    # WITHDRAW (exchange -> unknown)
+    # ======================================
+    change_addr = detect_change_address(inputs, outputs)
+
+    if change_addr:
+        filtered_outputs = {a: b for a, b in outputs.items() if a != change_addr}
+    else:
+        filtered_outputs = outputs
+        
+    for cid, vol in in_exchange.items():
+
+        withdraw_vol = min(vol, sum(filtered_outputs.values()))
+    
+        if unknown_outputs and not out_exchange:
+            flows.append((cid, None, "WITHDRAW", withdraw_vol))
+    
+    
+    # ======================================
+    # DEPOSIT (unknown -> exchange)
+    # ======================================
+    
+    # [FIX 3] Deposit detection independent
+    for cid, vol in out_exchange.items():
+        if len(inputs) >= 15 and len(outputs) == 1:
+            largest_input = max(inputs.values())
+            avg_input = sum(inputs.values()) / len(inputs)
+            if largest_input <= avg_input * 5:  # один вход не доминирует
+                flows.append((None, cid, "DEPOSIT", vol))
 
     return flows
 
@@ -343,24 +369,25 @@ def heuristic_flow_classification(inputs, outputs, total_btc):
 
     largest_output = max(outputs.values()) if outputs else 0
     output_ratio = largest_output / total_btc if total_btc else 0
-
+    flow_btc = sum(outputs.values())
+    
     # exchange withdraw pattern
-    if num_in <= 2 and num_out >= 2 and output_ratio > 0.7:
-        flows.append((None, None, "POSSIBLE_EXCHANGE_WITHDRAW", largest_output))
+    if num_in <= 2 and num_out >= 2 and output_ratio > 0.8:
+        flows.append((None, None, "POSSIBLE_EXCHANGE_WITHDRAW", flow_btc))
 
     # consolidation
     elif num_in >= 5 and num_out <= 2:
-        flows.append((None, None, "CONSOLIDATION", total_btc))
+        flows.append((None, None, "CONSOLIDATION", flow_btc))
 
     # exchange deposit
     elif num_in >= 3 and num_out <= 2:
-        flows.append((None, None, "POSSIBLE_EXCHANGE_DEPOSIT", total_btc))
+        flows.append((None, None, "POSSIBLE_EXCHANGE_DEPOSIT", flow_btc))
 
     elif num_in > 1 and num_out > 1:
-        flows.append((None, None, "INTERNAL", total_btc))
+        flows.append((None, None, "INTERNAL", flow_btc))
 
     else:
-        flows.append((None, None, "TRANSFER", total_btc))
+        flows.append((None, None, "TRANSFER", flow_btc))
 
     return flows
 
@@ -407,7 +434,7 @@ def detect_hot_wallet(inputs, outputs):
 
     total = sum(outputs.values())
 
-    if total < 50:
+    if total < MIN_TRACK_BTC:
         return False
 
     largest = max(outputs.values())
@@ -424,18 +451,34 @@ def detect_hot_wallet(inputs, outputs):
 
 def detect_exchange_deposit(inputs, outputs):
 
-    if len(inputs) < 10:
-        return False
+    # typical exchange deposit pattern:
+    # many user inputs -> single exchange address
 
     if len(outputs) != 1:
         return False
 
+    num_inputs = len(inputs)
+
+    # too few inputs → probably normal transaction
+    if num_inputs < 15:
+        return False
+
     total = sum(inputs.values())
 
-    if total < 20:
+    # small totals often consolidation
+    if total < MIN_TRACK_BTC:
+        return False
+
+    # check distribution (avoid whale consolidation)
+    avg_input = total / num_inputs
+    largest_input = max(inputs.values())
+
+    # if one input dominates → not deposit
+    if largest_input > avg_input * 5:
         return False
 
     return True
+
 
 # ==============================================
 # Change address detection
@@ -464,8 +507,8 @@ def detect_change_address(inputs, outputs):
     smallest_addr = min(candidates, key=lambda a: outputs[a])
     smallest_val = outputs[smallest_addr]
 
-    # simple heuristic: if smallest output < 10% of total, consider as change
-    if smallest_val < 0.2 * total_out:
+    # simple heuristic: if smallest output < 15% of total, consider as change
+    if smallest_val < 0.15 * total_out:
         return smallest_addr
 
     return None
@@ -582,44 +625,46 @@ def process_tx(tx, cursor, cluster_cache):
     # ======================================
     # Fanout clustering (exchange hotwallet)
     # ======================================
-
+    
     # защита от self churn
     if any(addr in inputs for addr in outputs):
         pass
     else:
     
         largest_output = max(outputs.values()) if outputs else 0
+        num_outputs = len(outputs)
     
-        if (
-            len(inputs) == 1
-            and 10 <= len(outputs) <= 100
-            and total >= 50
-            and largest_output < total * 0.8
-        ):
-
+        if len(inputs) == 1 and 15 <= num_outputs <= 100 and total >= 50 and largest_output < total * 0.8:
+            avg_output = total / num_outputs
+    
+            # дополнительная защита: если один output слишком велик → не кластеризуем
+            if largest_output > avg_output * 3:
+                # это скорее payment, не hotwallet
+                return  # пропустить фан-аут кластеризацию
+    
             existing_clusters = set()
-
+    
             for addr in outputs.keys():
                 cid, _ = resolve_cluster(addr, cursor, cluster_cache)
                 cid = _cid(cid)
                 if cid:
                     existing_clusters.add(cid)
-            
+    
             if existing_clusters:
                 base_cluster = min(existing_clusters)
             else:
                 base_cluster = create_behavioral_cluster(
                     list(outputs.keys())[0], cursor, cluster_cache
                 )
-            
+    
             for addr in outputs.keys():
-            
+    
                 cursor.execute("""
                     INSERT OR IGNORE INTO cluster_addresses
                     (address, cluster_id, confidence, first_seen, last_seen)
                     VALUES (?, ?, ?, ?, ?)
                 """, (addr, base_cluster, 0.5, now, now))
-            
+    
                 cluster_cache[addr] = (base_cluster, 0.5)
 
 
