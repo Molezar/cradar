@@ -117,7 +117,7 @@ async function load() {
         volHtml += `<div>DEPOSIT: <span class='flow deposit'>${deposit.toFixed(2)} BTC</span></div>`;
         volHtml += `<div>WITHDRAW: <span class='flow withdraw'>${withdraw.toFixed(2)} BTC</span></div>`;
 
-        const netColor = net >= 0 ? "negative" : "positive";
+        const netColor = net >= 0 ? "positive" : "negative";
 
         volHtml += `<div>NET (W-D): <span class='net ${netColor}'>${net.toFixed(2)} BTC</span></div>`;
         volHtml += "</div>";
