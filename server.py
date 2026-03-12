@@ -408,6 +408,72 @@ def whales():
         if conn:
             conn.close()
 
+@app.route("/marketpulse")
+def marketpulse():
+    """
+    Возвращает:
+    {
+        trend: "UP"|"DOWN"|"NEUTRAL",
+        confidence: float (0..1),
+        keyFlows: [{cluster_id, btc, flow_type}]
+    }
+    """
+    window = 600  # последние 10 минут
+    now = int(time.time())
+    since = now - window
+
+    conn = None
+    try:
+        conn = get_db()
+        # Берём net_flow по кластерам за последние 10 минут
+        rows = conn.execute("""
+            SELECT 
+                cluster_id,
+                SUM(CASE WHEN flow_type='DEPOSIT' THEN btc ELSE 0 END) -
+                SUM(CASE WHEN flow_type='WITHDRAW' THEN btc ELSE 0 END) AS net_flow
+            FROM exchange_flow
+            WHERE ts > ?
+            GROUP BY cluster_id
+        """, (since,)).fetchall()
+
+        total_net = sum(r["net_flow"] for r in rows)
+
+        # Определяем тренд
+        if total_net > 0.01:
+            trend = "DOWN"  # вывод BTC с биржи
+        elif total_net < -0.01:
+            trend = "UP"    # приток BTC на биржу
+        else:
+            trend = "NEUTRAL"
+
+        # Confidence = нормализуем к 0..1 по max abs net_flow
+        max_abs = max((abs(r["net_flow"]) for r in rows), default=1)
+        confidence = min(abs(total_net) / max_abs, 1.0)
+
+        # KeyFlows: топ 5 кластеров по абсолютной величине net_flow
+        top_flows = sorted(rows, key=lambda r: abs(r["net_flow"]), reverse=True)[:5]
+
+        key_flows = []
+        for r in top_flows:
+            flow_type = "DEPOSIT" if r["net_flow"] < 0 else "WITHDRAW" if r["net_flow"] > 0 else "INTERNAL"
+            key_flows.append({
+                "cluster_id": r["cluster_id"],
+                "btc": round(abs(r["net_flow"]), 2),
+                "flow_type": flow_type
+            })
+
+        return jsonify({
+            "trend": trend,
+            "confidence": round(confidence, 2),
+            "keyFlows": key_flows
+        })
+
+    except Exception:
+        logger.exception("MarketPulse endpoint error")
+        return jsonify({"error": "Internal server error"}), 500
+    finally:
+        if conn:
+            conn.close()
 
 @app.route("/volumes")
 def volumes():

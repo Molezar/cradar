@@ -107,6 +107,39 @@ async function load() {
 
         document.getElementById("forecast").innerHTML = pred;
 
+        // --- Market Pulse Section ---
+        const marketPulseEl = document.getElementById("marketpulse");
+        if (marketPulseEl) {
+            try {
+                const mpj = await fetch("/marketpulse?t=" + Date.now()).then(r => r.json());
+                
+                // предполагаем структура mpj:
+                // mpj = { trend: "UP"|"DOWN"|"NEUTRAL", confidence: 0..1, keyFlows: [ {cluster_id, btc, flow_type} ] }
+        
+                let mpHtml = "<div class='pred'>=== MARKET PULSE ===</div>";
+        
+                // Основной прогноз
+                const trendEmoji = mpj.trend === "UP" ? "⬆" : mpj.trend === "DOWN" ? "⬇" : "→";
+                const confPct = ((mpj.confidence || 0) * 100).toFixed(0);
+                mpHtml += `<div>Trend: ${trendEmoji} ${mpj.trend} (Confidence: ${confPct}%)</div>`;
+        
+                // Ключевые потоки последних минут
+                if (Array.isArray(mpj.keyFlows) && mpj.keyFlows.length) {
+                    mpHtml += "<div>Key Flows:</div>";
+                    mpj.keyFlows.forEach(f => {
+                        const arrow = f.flow_type === "DEPOSIT" ? "←" :
+                                      f.flow_type === "WITHDRAW" ? "→" : "•";
+                        mpHtml += `<div style="margin-left: 12px;">Cluster ${f.cluster_id}: ${arrow} ${f.btc.toFixed(2)} BTC</div>`;
+                    });
+                }
+        
+                marketPulseEl.innerHTML = mpHtml;
+            } catch(e) {
+                marketPulseEl.innerHTML = "<div class='pred'>Market Pulse unavailable</div>";
+                console.error(e);
+            }
+        }
+        
         // --- Volumes ---
         let volHtml = "<div class='volumes'><div class='pred'>=== 1H VOLUMES ===</div>";
 
