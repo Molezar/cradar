@@ -168,7 +168,7 @@ async function load() {
 
             const net = Number(x.net_flow) || 0;
         
-            const color = net > 0 ? "#ff5c5c" : net < 0 ? "#00ffaa" : "gray";
+            const color = net < 0 ? "#00ffaa" : net > 0 ? "#ff5c5c" : "gray";
             const arrow = net < 0 ? "→" : net > 0 ? "←" : "•";
         
             flowHtml += `<div style="color:${color}">

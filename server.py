@@ -458,7 +458,7 @@ def marketpulse():
             flow_type = "DEPOSIT" if r["net_flow"] < 0 else "WITHDRAW" if r["net_flow"] > 0 else "INTERNAL"
             key_flows.append({
                 "cluster_id": r["cluster_id"],
-                "btc": round(abs(r["net_flow"]), 2),
+                "btc": round(r["net_flow"], 2),
                 "flow_type": flow_type
             })
 
