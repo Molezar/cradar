@@ -408,6 +408,7 @@ def whales():
         if conn:
             conn.close()
 
+
 @app.route("/marketpulse")
 def marketpulse():
     """
@@ -475,6 +476,7 @@ def marketpulse():
         if conn:
             conn.close()
 
+
 @app.route("/volumes")
 def volumes():
     conn = None
@@ -512,6 +514,7 @@ def volumes():
     finally:
         if conn:
             conn.close()
+
             
 @app.route("/exchange_flow")
 def exchange_flow():
