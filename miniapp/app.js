@@ -10,11 +10,11 @@ function fmtTime(ts) {
 
 function flowArrow(flow) {
     return {
-        DEPOSIT: "→",
-        WITHDRAW: "←",
+        DEPOSIT: "←",
+        WITHDRAW: "→",
         INTERNAL: "↔",
-        POSSIBLE_EXCHANGE_WITHDRAW: "←",
-        POSSIBLE_EXCHANGE_DEPOSIT: "→",
+        POSSIBLE_EXCHANGE_WITHDRAW: "→",
+        POSSIBLE_EXCHANGE_DEPOSIT: "←",
         CONSOLIDATION: "↦",
         TRANSFER: "•"
     }[flow] || "•";
@@ -117,7 +117,7 @@ async function load() {
         volHtml += `<div>DEPOSIT: <span class='flow deposit'>${deposit.toFixed(2)} BTC</span></div>`;
         volHtml += `<div>WITHDRAW: <span class='flow withdraw'>${withdraw.toFixed(2)} BTC</span></div>`;
 
-        const netColor = net >= 0 ? "positive" : "negative";
+        const netColor = net >= 0 ? "negative" : "positive";
 
         volHtml += `<div>NET (W-D): <span class='net ${netColor}'>${net.toFixed(2)} BTC</span></div>`;
         volHtml += "</div>";
@@ -132,7 +132,7 @@ async function load() {
             const net = Number(x.net_flow) || 0;
         
             const color = net < 0 ? "#00ffaa" : net > 0 ? "#ff5c5c" : "gray";
-            const arrow = net < 0 ? "←" : net > 0 ? "→" : "•";
+            const arrow = net < 0 ? "→" : net > 0 ? "←" : "•";
         
             flowHtml += `<div style="color:${color}">
                 Cluster ${x.cluster_id}: ${arrow} ${Math.abs(net).toFixed(2)} BTC
@@ -149,8 +149,18 @@ async function load() {
 
         for (const r of rawj.rows || []) {
 
-            const color = r.flow_type === "DEPOSIT" ? "#ff5c5c" : "#00ffaa";
-            const arrow = r.flow_type === "DEPOSIT" ? "→" : "←";   
+            let color = "gray";
+            let arrow = "•";
+            
+            if (r.flow_type === "DEPOSIT") {
+                color = "#ff5c5c";
+                arrow = "←";
+            }
+            
+            if (r.flow_type === "WITHDRAW") {
+                color = "#00ffaa";
+                arrow = "→";
+            }  
 
             rawHtml += `<div style="color:${color}">
                 ${fmtTime(r.ts)} &nbsp;
