@@ -62,14 +62,12 @@ def resolve_cluster(address, cursor, cache=None):
 
     return result
 
-
 def update_address_seen(address, cursor):
     cursor.execute("""
         UPDATE cluster_addresses
         SET last_seen=?
         WHERE address=?
     """, (int(time.time()), address))
-
 
 def create_behavioral_cluster(address, cursor, cache=None):
     now = int(time.time())
@@ -157,7 +155,6 @@ def get_input_map(tx):
 
     return m
 
-
 def get_output_map(tx):
     m = {}
     for v in tx.get("vout", []):
@@ -168,7 +165,6 @@ def get_output_map(tx):
             m[addr] = m.get(addr, 0) + val
 
     return m
-
 
 def store_tx_io(txid, inputs_map, outputs_map, cursor):
 

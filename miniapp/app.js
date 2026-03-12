@@ -1,3 +1,4 @@
+//app.js
 let lastPrice = null;
 const ALERT_WHALE_BTC = window.ALERT_WHALE_BTC || 1000;
 
@@ -141,8 +142,8 @@ async function load() {
 
         for (const r of rawj.rows || []) {
 
-            const color = r.flow_type === "DEPOSIT" ? "#ff5c5c" : "#00ffaa";
-            const arrow = r.flow_type === "DEPOSIT" ? "→" : "←";
+            const color = r.flow_type === "DEPOSIT" ? "#00ffaa" : "#ff5c5c";
+            const arrow = r.flow_type === "DEPOSIT" ? "←" : "→";    
 
             rawHtml += `<div style="color:${color}">
                 ${fmtTime(r.ts)} &nbsp;

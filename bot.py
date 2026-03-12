@@ -29,7 +29,7 @@ WEBAPP_URL = Config.WEBAPP_URL
 MIN_WHALE_BTC = Config.MIN_WHALE_BTC
 ALERT_WHALE_BTC = Config.ALERT_WHALE_BTC
 
-NET_ALERT_THRESHOLD = 500          # порог в BTC, при превышении которого шлём алерт
+NET_ALERT_THRESHOLD = 700          # порог в BTC, при превышении которого шлём алерт
 NET_ALERT_INTERVAL = 1800           # проверка раз в 30 минут (1800 секунд)
 NET_ALERT_COOLDOWN = 3600           # минимальное время между повторными алертами (1 час)
 
