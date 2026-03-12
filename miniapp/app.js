@@ -110,12 +110,16 @@ async function load() {
         // --- Volumes ---
         let volHtml = "<div class='volumes'><div class='pred'>=== 1H VOLUMES ===</div>";
 
-        volHtml += `<div>DEPOSIT: <span class='flow deposit'>${volj.deposit.toFixed(2)} BTC</span></div>`;
-        volHtml += `<div>WITHDRAW: <span class='flow withdraw'>${volj.withdraw.toFixed(2)} BTC</span></div>`;
+        const deposit = Number(volj.deposit) || 0;
+        const withdraw = Number(volj.withdraw) || 0;
+        const net = Number(volj.net) || 0;
+        
+        volHtml += `<div>DEPOSIT: <span class='flow deposit'>${deposit.toFixed(2)} BTC</span></div>`;
+        volHtml += `<div>WITHDRAW: <span class='flow withdraw'>${withdraw.toFixed(2)} BTC</span></div>`;
 
-        const netColor = volj.net >= 0 ? "positive" : "negative";
+        const netColor = net >= 0 ? "positive" : "negative";
 
-        volHtml += `<div>NET (W-D): <span class='net ${netColor}'>${volj.net.toFixed(2)} BTC</span></div>`;
+        volHtml += `<div>NET (W-D): <span class='net ${netColor}'>${net.toFixed(2)} BTC</span></div>`;
         volHtml += "</div>";
 
         document.getElementById("volumes").innerHTML = volHtml;
@@ -123,27 +127,30 @@ async function load() {
         // --- Exchange Flow Minimap ---
         let flowHtml = "<div class='volumes'><div class='pred'>=== EXCHANGE FLOW (10 min) ===</div>";
 
-        for (const x of flowj.flows || []) {
-            const net = Number(x.net_flow) || 0;
-            const dir = net > 0 ? "⬆" : net < 0 ? "⬇" : "→";
-            const color = net > 0 ? "green" : net < 0 ? "red" : "gray";
+        for (const x of (flowj.flows || []).sort((a,b)=>Math.abs(b.net_flow)-Math.abs(a.net_flow))) {
 
+            const net = Number(x.net_flow) || 0;
+        
+            const color = net < 0 ? "#00ffaa" : net > 0 ? "#ff5c5c" : "gray";
+            const arrow = net < 0 ? "←" : net > 0 ? "→" : "•";
+        
             flowHtml += `<div style="color:${color}">
-                Cluster ${x.cluster_id}: ${dir} ${net.toFixed(2)} BTC
+                Cluster ${x.cluster_id}: ${arrow} ${Math.abs(net).toFixed(2)} BTC
             </div>`;
         }
 
         flowHtml += "</div>";
 
-        document.getElementById("exchange_flow").innerHTML = flowHtml;
+        const el = document.getElementById("exchange_flow");
+        if (el) el.innerHTML = flowHtml;
 
         // --- RAW Exchange Flow ---
         let rawHtml = "<div class='volumes'><div class='pred'>=== RAW EXCHANGE FLOW ===</div>";
 
         for (const r of rawj.rows || []) {
 
-            const color = r.flow_type === "DEPOSIT" ? "#00ffaa" : "#ff5c5c";
-            const arrow = r.flow_type === "DEPOSIT" ? "←" : "→";    
+            const color = r.flow_type === "DEPOSIT" ? "#ff5c5c" : "#00ffaa";
+            const arrow = r.flow_type === "DEPOSIT" ? "→" : "←";   
 
             rawHtml += `<div style="color:${color}">
                 ${fmtTime(r.ts)} &nbsp;
