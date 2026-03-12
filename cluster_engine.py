@@ -68,7 +68,8 @@ def insert_or_update_address(cursor, cache, addr, cluster_id, confidence, now):
             WHERE address=?
         """, (addr,)).fetchone()
         if existing:
-            existing = {"cluster_id": existing["cluster_id"], "confidence": existing.get("confidence", confidence)}
+            existing = dict(existing)
+                existing["confidence"] = existing.get("confidence", confidence)
         cache[addr] = existing
 
     if existing:
