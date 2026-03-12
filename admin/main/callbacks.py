@@ -1,3 +1,4 @@
+# admin/main/callbacks.py
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -5,10 +6,58 @@ from aiogram.types import FSInputFile
 from config import Config
 from logger import get_logger
 from admin.keyboards import get_admin_to_main_bt
+from database.database import get_db
 
 logger = get_logger(__name__)
 
 
+async def handle_tables_info(callback):
+    """
+    Показывает количество записей в каждой таблице БД
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT name
+            FROM sqlite_master
+            WHERE type='table'
+            AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+        """)
+
+        tables = [row[0] for row in cursor.fetchall()]
+
+        lines = []
+
+        for table in tables:
+            try:
+                cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                count = cursor.fetchone()[0]
+                lines.append(f"{table}: {count}")
+            except Exception:
+                lines.append(f"{table}: error")
+
+        conn.close()
+
+        text = "📊 Таблицы БД:\n\n" + "\n".join(lines)
+
+        if len(text) > 3500:
+            text = text[:3500] + "\n..."
+
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_admin_to_main_bt()
+        )
+
+    except Exception as e:
+        logger.exception(e)
+        await callback.message.edit_text(
+            "❌ Ошибка получения информации о таблицах",
+            reply_markup=get_admin_to_main_bt()
+        )
+        
 async def handle_download_db(callback):
     """
     Отправка бэкапа базы данных через телеграм.

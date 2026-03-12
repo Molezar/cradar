@@ -17,7 +17,8 @@ from .keyboards import (
 from admin.main.callbacks import (
     handle_download_db,
     handle_download_migrations_log,
-    handle_view_volume
+    handle_view_volume,
+    handle_tables_info
 )
 from admin.signal.callbacks import (
     handle_signal,
@@ -59,7 +60,9 @@ async def handle_admin_callbacks(callback: types.CallbackQuery, state: FSMContex
                 "Вы действительно хотите скачать базу данных?",
                 reply_markup=get_download_db_confirm_kb()
             )
-
+        elif data == "admin:tables_info":
+            await handle_tables_info(callback)
+            
         elif data == "admin:download_db":
             await handle_download_db(callback)
 
