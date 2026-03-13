@@ -166,27 +166,17 @@ async def handle_exchange_flow_1h(callback):
 
         cursor.execute("""
             SELECT
-                cluster_id,
-                flow_type,
-                SUM(btc) as total_btc
+                SUM(CASE WHEN flow_type = 'inflow' THEN btc ELSE 0 END) as inflow,
+                SUM(CASE WHEN flow_type = 'outflow' THEN btc ELSE 0 END) as outflow
             FROM exchange_flow
-            WHERE ts > strftime('%s','now') - 3600
-            GROUP BY cluster_id, flow_type
+            WHERE ts > CAST(strftime('%s','now') AS INTEGER) - 3600
         """)
 
-        rows = cursor.fetchall()
-
+        row = cursor.fetchone()
         conn.close()
 
-        inflow = 0
-        outflow = 0
-
-        for r in rows:
-            if r["flow_type"] == "inflow":
-                inflow += r["total_btc"] or 0
-            elif r["flow_type"] == "outflow":
-                outflow += r["total_btc"] or 0
-
+        inflow = row["inflow"] or 0
+        outflow = row["outflow"] or 0
         net = inflow - outflow
 
         text = (
@@ -225,12 +215,14 @@ async def handle_whale_pressure_15m(callback):
 
         cursor.execute("""
             SELECT
-                flow_type,
-                SUM(btc) as total_btc
-            FROM exchange_flow
-            WHERE ts > strftime('%s','now') - 900
-            AND cluster_type = 'whale'
-            GROUP BY flow_type
+                ef.flow_type,
+                SUM(ef.btc) as total_btc
+            FROM exchange_flow ef
+            JOIN clusters c
+                ON ef.cluster_id = c.id
+            WHERE ef.ts > strftime('%s','now') - 900
+            AND c.cluster_type = 'EXCHANGE'
+            GROUP BY ef.flow_type
         """)
 
         rows = cursor.fetchall()
