@@ -115,6 +115,35 @@ def merge_clusters(target_cluster, source_cluster, cursor, cache=None):
         WHERE cluster_id=?
     """, (target_cluster, source_cluster))
         
+    # update whale_classification references
+    cursor.execute("""
+        UPDATE whale_classification
+        SET from_cluster = ?
+        WHERE from_cluster = ?
+    """, (target_cluster, source_cluster))
+    
+    cursor.execute("""
+        UPDATE whale_classification
+        SET to_cluster = ?
+        WHERE to_cluster = ?
+    """, (target_cluster, source_cluster))
+    
+    
+    # update exchange_flow
+    cursor.execute("""
+        UPDATE exchange_flow
+        SET cluster_id = ?
+        WHERE cluster_id = ?
+    """, (target_cluster, source_cluster))
+    
+    
+    # update address_fingerprint
+    cursor.execute("""
+        UPDATE address_fingerprint
+        SET cluster_id = ?
+        WHERE cluster_id = ?
+    """, (target_cluster, source_cluster))
+    
     cursor.execute("""
         DELETE FROM clusters
         WHERE id=?
