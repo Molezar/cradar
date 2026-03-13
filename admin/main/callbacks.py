@@ -166,8 +166,8 @@ async def handle_exchange_flow_1h(callback):
 
         cursor.execute("""
             SELECT
-                SUM(CASE WHEN flow_type = 'inflow' THEN btc ELSE 0 END) as inflow,
-                SUM(CASE WHEN flow_type = 'outflow' THEN btc ELSE 0 END) as outflow
+                SUM(CASE WHEN flow_type = 'DEPOSIT' THEN btc ELSE 0 END) as inflow,
+                SUM(CASE WHEN flow_type = 'WITHDRAW' THEN btc ELSE 0 END) as outflow
             FROM exchange_flow
             WHERE ts > CAST(strftime('%s','now') AS INTEGER) - 3600
         """)
@@ -220,7 +220,7 @@ async def handle_whale_pressure_15m(callback):
             FROM exchange_flow ef
             JOIN clusters c
                 ON ef.cluster_id = c.id
-            WHERE ef.ts > strftime('%s','now') - 900
+            WHERE ef.ts > CAST(strftime('%s','now') AS INTEGER) - 900
             AND c.cluster_type = 'EXCHANGE'
             GROUP BY ef.flow_type
         """)
@@ -232,9 +232,9 @@ async def handle_whale_pressure_15m(callback):
         outflow = 0
 
         for r in rows:
-            if r["flow_type"] == "inflow":
+            if r["flow_type"] == "DEPOSIT":
                 inflow += r["total_btc"] or 0
-            elif r["flow_type"] == "outflow":
+            elif r["flow_type"] == "WITHDRAW":
                 outflow += r["total_btc"] or 0
 
         net = inflow - outflow
@@ -268,7 +268,6 @@ async def handle_whale_pressure_15m(callback):
             "❌ Ошибка анализа whale pressure",
             reply_markup=get_admin_to_main_bt()
         )
-
 
 async def handle_download_db(callback):
     """
