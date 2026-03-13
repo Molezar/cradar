@@ -626,8 +626,8 @@ def process_tx(tx, cursor, cluster_cache):
     # Fanout clustering (exchange hotwallet)
     # ======================================
     
-    # защита от self churn
-    if any(addr in inputs for addr in outputs):
+    # ignore simple self churn
+    if len(inputs) == 1 and len(outputs) == 1:
         pass
     else:
     
