@@ -57,24 +57,28 @@ async def handle_tables_info(callback):
             "❌ Ошибка получения информации о таблицах",
             reply_markup=get_admin_to_main_bt()
         )
+        
 async def handle_cluster_health(callback):
     """
-    Показывает метрику здоровья кластеризации
+    Показывает метрику здоровья кластеризации (последние 2 часа)
     """
     try:
         conn = get_db()
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT COUNT(*) FROM whale_classification
+            SELECT COUNT(*)
+            FROM whale_classification
+            WHERE time > strftime('%s','now') - 7200
         """)
         total = cursor.fetchone()[0]
 
         cursor.execute("""
             SELECT COUNT(*)
             FROM whale_classification
-            WHERE from_cluster IS NOT NULL
-               OR to_cluster IS NOT NULL
+            WHERE (from_cluster IS NOT NULL
+               OR to_cluster IS NOT NULL)
+            AND time > strftime('%s','now') - 7200
         """)
         clustered = cursor.fetchone()[0]
 
@@ -85,7 +89,7 @@ async def handle_cluster_health(callback):
             ratio = clustered / total
 
         text = (
-            "🧠 Cluster health\n\n"
+            "🧠 Cluster health (last 2h)\n\n"
             f"total flows: {total}\n"
             f"clustered flows: {clustered}\n\n"
             f"cluster ratio: {ratio:.3f}\n\n"
@@ -109,7 +113,6 @@ async def handle_cluster_health(callback):
             "❌ Ошибка получения cluster health",
             reply_markup=get_admin_to_main_bt()
         )
-
         
 async def handle_download_db(callback):
     """

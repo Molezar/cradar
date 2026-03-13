@@ -50,7 +50,7 @@ def get_auto_mode_kb(auto_enabled: bool):
 def get_admin_main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Таблицы", callback_data="admin:tables_info")],
-        [InlineKeyboardButton(text="🧠 Cluster health", callback_data="admin:cluster_health")],
+        [InlineKeyboardButton(text="🧠 Cluster health (last 2h)", callback_data="admin:cluster_health")],
         [InlineKeyboardButton(text="💾 Скачать БД", callback_data="admin:download_db_confirm")],
         [InlineKeyboardButton(text="📜 Скачать лог миграций", callback_data="admin:download_migrations_log_confirm")],
         [InlineKeyboardButton(text="📂 Volume files", callback_data="admin:view_volume")],

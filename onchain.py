@@ -454,13 +454,13 @@ def detect_exchange_deposit(inputs, outputs):
     # typical exchange deposit pattern:
     # many user inputs -> single exchange address
 
-    if len(outputs) != 1:
+    if len(outputs) > 3:
         return False
 
     num_inputs = len(inputs)
 
     # too few inputs → probably normal transaction
-    if num_inputs < 15:
+    if num_inputs < 4:
         return False
 
     total = sum(inputs.values())
@@ -474,7 +474,7 @@ def detect_exchange_deposit(inputs, outputs):
     largest_input = max(inputs.values())
 
     # if one input dominates → not deposit
-    if largest_input > avg_input * 5:
+    if largest_input > avg_input * 6:
         return False
 
     return True
