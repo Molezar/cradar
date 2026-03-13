@@ -19,7 +19,10 @@ from admin.main.callbacks import (
     handle_download_migrations_log,
     handle_view_volume,
     handle_tables_info,
-    handle_cluster_health
+    handle_cluster_health,
+    handle_top_clusters,
+    handle_exchange_flow_1h,
+    handle_whale_pressure_15m
 )
 from admin.signal.callbacks import (
     handle_signal,
@@ -66,6 +69,15 @@ async def handle_admin_callbacks(callback: types.CallbackQuery, state: FSMContex
             
         elif data == "admin:cluster_health":
             await handle_cluster_health(callback)
+        
+        elif data == "admin:top_clusters":
+            await handle_top_clusters(callback)
+        
+        elif data == "admin:exchange_flow_1h":
+            await handle_exchange_flow_1h(callback)
+        
+        elif data == "admin:whale_pressure_15m":
+            await handle_whale_pressure_15m(callback) 
         
         elif data == "admin:download_db":
             await handle_download_db(callback)

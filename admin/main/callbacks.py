@@ -113,7 +113,171 @@ async def handle_cluster_health(callback):
             "❌ Ошибка получения cluster health",
             reply_markup=get_admin_to_main_bt()
         )
-        
+
+async def handle_top_clusters(callback):
+    """
+    Показывает крупнейшие кластеры
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT id, cluster_type, size, confidence
+            FROM clusters
+            ORDER BY size DESC
+            LIMIT 10
+        """)
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        if not rows:
+            text = "📊 Кластеры не найдены"
+        else:
+            lines = []
+            for r in rows:
+                lines.append(
+                    f"id:{r['id']} | {r['cluster_type']} | "
+                    f"size:{r['size']} | conf:{r['confidence']:.2f}"
+                )
+
+            text = "📊 Top clusters\n\n" + "\n".join(lines)
+
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_admin_to_main_bt()
+        )
+
+    except Exception as e:
+        logger.exception(e)
+        await callback.message.edit_text(
+            "❌ Ошибка получения кластеров",
+            reply_markup=get_admin_to_main_bt()
+        )
+
+async def handle_exchange_flow_1h(callback):
+    """
+    Показывает притоки и оттоки BTC на биржи за последний час
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                cluster_id,
+                flow_type,
+                SUM(btc) as total_btc
+            FROM exchange_flow
+            WHERE ts > strftime('%s','now') - 3600
+            GROUP BY cluster_id, flow_type
+        """)
+
+        rows = cursor.fetchall()
+
+        conn.close()
+
+        inflow = 0
+        outflow = 0
+
+        for r in rows:
+            if r["flow_type"] == "inflow":
+                inflow += r["total_btc"] or 0
+            elif r["flow_type"] == "outflow":
+                outflow += r["total_btc"] or 0
+
+        net = inflow - outflow
+
+        text = (
+            "📈 Exchange flow (last 1h)\n\n"
+            f"⬇️ inflow: {inflow:.2f} BTC\n"
+            f"⬆️ outflow: {outflow:.2f} BTC\n\n"
+            f"📊 net flow: {net:.2f} BTC\n\n"
+        )
+
+        if net > 0:
+            text += "⚠️ давление продаж (BTC поступает на биржи)"
+        elif net < 0:
+            text += "🚀 давление покупок (BTC выводится с бирж)"
+        else:
+            text += "➖ нейтральный поток"
+
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_admin_to_main_bt()
+        )
+
+    except Exception as e:
+        logger.exception(e)
+        await callback.message.edit_text(
+            "❌ Ошибка получения exchange flow",
+            reply_markup=get_admin_to_main_bt()
+        )
+
+async def handle_whale_pressure_15m(callback):
+    """
+    Анализ давления китов за 15 минут
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                flow_type,
+                SUM(btc) as total_btc
+            FROM exchange_flow
+            WHERE ts > strftime('%s','now') - 900
+            AND cluster_type = 'whale'
+            GROUP BY flow_type
+        """)
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        inflow = 0
+        outflow = 0
+
+        for r in rows:
+            if r["flow_type"] == "inflow":
+                inflow += r["total_btc"] or 0
+            elif r["flow_type"] == "outflow":
+                outflow += r["total_btc"] or 0
+
+        net = inflow - outflow
+
+        text = (
+            "🧠 Whale pressure (15m)\n\n"
+            f"⬇️ whale → exchange: {inflow:.2f} BTC\n"
+            f"⬆️ exchange → whale: {outflow:.2f} BTC\n\n"
+            f"📊 net: {net:.2f} BTC\n\n"
+        )
+
+        if net > 100:
+            text += "🔥 сильное давление продаж"
+        elif net > 20:
+            text += "⚠️ умеренное давление продаж"
+        elif net < -100:
+            text += "🚀 сильное давление покупок"
+        elif net < -20:
+            text += "📈 умеренное давление покупок"
+        else:
+            text += "➖ нейтральное давление"
+
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_admin_to_main_bt()
+        )
+
+    except Exception as e:
+        logger.exception(e)
+        await callback.message.edit_text(
+            "❌ Ошибка анализа whale pressure",
+            reply_markup=get_admin_to_main_bt()
+        )
+
+
 async def handle_download_db(callback):
     """
     Отправка бэкапа базы данных через телеграм.
