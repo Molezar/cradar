@@ -49,17 +49,13 @@ def get_auto_mode_kb(auto_enabled: bool):
     
 def get_admin_main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Таблицы", callback_data="admin:tables_info")],
-        [InlineKeyboardButton(text="🧠 Cluster health (last 2h)", callback_data="admin:cluster_health")],
-        [InlineKeyboardButton(text="📊 Top clusters", callback_data="admin:top_clusters")],
-        [InlineKeyboardButton(text="📈 Exchange flow (1h)", callback_data="admin:exchange_flow_1h")],
-        [InlineKeyboardButton(text="🧠 Whale pressure (15m)", callback_data="admin:whale_pressure_15m")],
+        [InlineKeyboardButton(text="📊 Аналитика", callback_data="admin:analytics")],
         [InlineKeyboardButton(text="💾 Скачать БД", callback_data="admin:download_db_confirm")],
         [InlineKeyboardButton(text="📜 Скачать лог миграций", callback_data="admin:download_migrations_log_confirm")],
         [InlineKeyboardButton(text="📂 Volume files", callback_data="admin:view_volume")],
         [InlineKeyboardButton(text="🎯 Сигнал", callback_data="signal:get")],
         [InlineKeyboardButton(text="🤖 Авто режим", callback_data="auto:menu")],
-        [InlineKeyboardButton(text="💰 Баланс", callback_data="admin:show_balance")],  # 👈 НОВАЯ
+        [InlineKeyboardButton(text="💰 Баланс", callback_data="admin:show_balance")],
         [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin:edit_balance")],
         [InlineKeyboardButton(text="♻️ Пересоздать БД", callback_data="admin:recreate_db_confirm")]
     ])
