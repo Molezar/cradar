@@ -18,7 +18,8 @@ from admin.main.callbacks import (
     handle_download_db,
     handle_download_migrations_log,
     handle_view_volume,
-    handle_tables_info
+    handle_tables_info,
+    handle_cluster_health
 )
 from admin.signal.callbacks import (
     handle_signal,
@@ -63,6 +64,9 @@ async def handle_admin_callbacks(callback: types.CallbackQuery, state: FSMContex
         elif data == "admin:tables_info":
             await handle_tables_info(callback)
             
+        elif data == "admin:cluster_health":
+            await handle_cluster_health(callback)
+        
         elif data == "admin:download_db":
             await handle_download_db(callback)
 

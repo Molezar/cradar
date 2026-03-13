@@ -57,6 +57,59 @@ async def handle_tables_info(callback):
             "❌ Ошибка получения информации о таблицах",
             reply_markup=get_admin_to_main_bt()
         )
+async def handle_cluster_health(callback):
+    """
+    Показывает метрику здоровья кластеризации
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT COUNT(*) FROM whale_classification
+        """)
+        total = cursor.fetchone()[0]
+
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM whale_classification
+            WHERE from_cluster IS NOT NULL
+               OR to_cluster IS NOT NULL
+        """)
+        clustered = cursor.fetchone()[0]
+
+        conn.close()
+
+        ratio = 0
+        if total > 0:
+            ratio = clustered / total
+
+        text = (
+            "🧠 Cluster health\n\n"
+            f"total flows: {total}\n"
+            f"clustered flows: {clustered}\n\n"
+            f"cluster ratio: {ratio:.3f}\n\n"
+        )
+
+        if ratio > 0.35:
+            text += "✅ кластеризация работает нормально"
+        elif ratio > 0.15:
+            text += "⚠️ кластеризация слабая"
+        else:
+            text += "❌ биржи почти не детектятся"
+
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_admin_to_main_bt()
+        )
+
+    except Exception as e:
+        logger.exception(e)
+        await callback.message.edit_text(
+            "❌ Ошибка получения cluster health",
+            reply_markup=get_admin_to_main_bt()
+        )
+
         
 async def handle_download_db(callback):
     """
