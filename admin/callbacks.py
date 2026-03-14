@@ -169,7 +169,7 @@ async def handle_admin_callbacks(callback: types.CallbackQuery, state: FSMContex
             
             # ✅ FSMContext уже передан в callback, используем его напрямую
             await state.set_state(BalanceStates.awaiting_new_balance)
-        elif data == "admin:analytics":
+        elif data == "admin:deal":
             await callback.message.edit_text(
                 "🎯 Сделка",
                 reply_markup=get_signal_main_kb()
