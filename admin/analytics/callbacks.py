@@ -180,16 +180,18 @@ async def handle_exchange_flow_1h(callback):
         """, (hour_ago,))
 
         row = cursor.fetchone()
+        conn.close()
 
         inflow = row["inflow"] or 0
         outflow = row["outflow"] or 0
         internal = row["internal"] or 0
-
         net = inflow - outflow
 
         # -----------------------------------------
         # BTC price change
         # -----------------------------------------
+        conn = get_db()
+        cursor = conn.cursor()
 
         cursor.execute("""
             SELECT price
@@ -198,7 +200,6 @@ async def handle_exchange_flow_1h(callback):
             ORDER BY ts ASC
             LIMIT 1
         """, (hour_ago,))
-
         start_row = cursor.fetchone()
 
         cursor.execute("""
@@ -207,24 +208,19 @@ async def handle_exchange_flow_1h(callback):
             ORDER BY ts DESC
             LIMIT 1
         """)
-
         end_row = cursor.fetchone()
-
         conn.close()
 
         price_change = None
-
         if start_row and end_row:
             start_price = start_row["price"]
             end_price = end_row["price"]
-
             if start_price:
                 price_change = (end_price - start_price) / start_price * 100
 
         # -----------------------------------------
         # text
         # -----------------------------------------
-
         text = (
             "📈 Exchange flow (last 1h)\n\n"
             f"⬇️ inflow: {inflow:.2f} BTC\n"
@@ -236,16 +232,11 @@ async def handle_exchange_flow_1h(callback):
         # инфо-блок про шум
         if abs(net) < 500:
             text += "🟡 net < ~500 BTC за час = шум\n\n"
-        else:
-            text += "\n"
 
         if price_change is not None:
             text += f"💰 BTC price change: {price_change:.2f}%\n\n"
 
-        # -----------------------------------------
         # market interpretation
-        # -----------------------------------------
-
         if net > 0:
             text += "🔴 sell pressure (BTC поступает на биржи)"
         elif net < 0:
@@ -255,7 +246,8 @@ async def handle_exchange_flow_1h(callback):
 
         await callback.message.edit_text(
             text,
-            reply_markup=get_analytics_kb()
+            reply_markup=get_analytics_kb(),
+            parse_mode=None  # <<< важно!
         )
 
     except Exception as e:
@@ -333,14 +325,16 @@ async def handle_whale_pressure_15m(callback):
 
         await callback.message.edit_text(
             text,
-            reply_markup=get_analytics_kb()
+            reply_markup=get_analytics_kb(),
+            parse_mode=None  # <<< фикс для ошибки Telegram
         )
 
     except Exception as e:
         logger.exception(e)
         await callback.message.edit_text(
             "❌ Ошибка анализа whale pressure",
-            reply_markup=get_admin_to_main_bt()
+            reply_markup=get_admin_to_main_bt(),
+            parse_mode=None
         )
 
 async def handle_flow_pipeline_check(callback):
