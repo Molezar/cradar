@@ -40,7 +40,8 @@ from admin.analytics.callbacks import (
     handle_cluster_health,
     handle_top_clusters,
     handle_exchange_flow_1h,
-    handle_whale_pressure_15m
+    handle_whale_pressure_15m,
+    handle_flow_pipeline_check
 )
 
 from aiogram.fsm.state import StatesGroup, State
@@ -84,6 +85,9 @@ async def handle_admin_callbacks(callback: types.CallbackQuery, state: FSMContex
         
         elif data == "admin:whale_pressure_15m":
             await handle_whale_pressure_15m(callback) 
+        
+        elif data == "admin:flow_pipeline_check":
+            await handle_flow_pipeline_check(callback)
         
         elif data == "admin:download_db":
             await handle_download_db(callback)

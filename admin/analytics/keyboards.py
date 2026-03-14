@@ -1,4 +1,3 @@
-#admin/analytics/keyboards.py
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 def get_analytics_kb():
@@ -8,5 +7,6 @@ def get_analytics_kb():
         [InlineKeyboardButton(text="🧠 Cluster health (last 2h)", callback_data="admin:cluster_health")],
         [InlineKeyboardButton(text="📈 Exchange flow (1h)", callback_data="admin:exchange_flow_1h")],
         [InlineKeyboardButton(text="🐋 Whale pressure (15m)", callback_data="admin:whale_pressure_15m")],
+        [InlineKeyboardButton(text="🔬 Flow pipeline", callback_data="admin:flow_pipeline_check")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_main")]
     ])

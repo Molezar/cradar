@@ -271,3 +271,78 @@ async def handle_whale_pressure_15m(callback):
             "❌ Ошибка анализа whale pressure",
             reply_markup=get_admin_to_main_bt()
         )
+        
+async def handle_flow_pipeline_check(callback):
+    """
+    Проверка pipeline:
+    exchange detection → cluster assignment → flow recording
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # типы потоков
+        cursor.execute("""
+            SELECT flow_type, COUNT(*) as cnt
+            FROM exchange_flow
+            GROUP BY flow_type
+        """)
+        rows = cursor.fetchall()
+
+        flow_lines = []
+        for r in rows:
+            flow_lines.append(f"{r['flow_type']}: {r['cnt']}")
+
+        # сколько кластеров участвует
+        cursor.execute("""
+            SELECT COUNT(DISTINCT cluster_id) as clusters
+            FROM exchange_flow
+        """)
+        clusters = cursor.fetchone()["clusters"]
+
+        # топ кластеров по объёму
+        cursor.execute("""
+            SELECT cluster_id, SUM(btc) as total
+            FROM exchange_flow
+            GROUP BY cluster_id
+            ORDER BY total DESC
+            LIMIT 5
+        """)
+        top = cursor.fetchall()
+
+        conn.close()
+
+        text = "🔬 Flow pipeline check\n\n"
+
+        if flow_lines:
+            text += "flows:\n"
+            text += "\n".join(flow_lines) + "\n\n"
+        else:
+            text += "flows: 0\n\n"
+
+        text += f"clusters in flows: {clusters}\n\n"
+
+        if top:
+            text += "top clusters by volume:\n"
+            for r in top:
+                text += f"id {r['cluster_id']} : {r['total']:.2f} BTC\n"
+            text += "\n"
+
+        if clusters > 5:
+            text += "✅ pipeline выглядит нормально"
+        elif clusters > 1:
+            text += "⚠️ мало кластеров"
+        else:
+            text += "❌ кластеры почти не участвуют"
+
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_analytics_kb()
+        )
+
+    except Exception as e:
+        logger.exception(e)
+        await callback.message.edit_text(
+            "❌ Ошибка проверки pipeline",
+            reply_markup=get_admin_to_main_bt()
+        )
