@@ -230,8 +230,8 @@ async def handle_exchange_flow_1h(callback):
         )
 
         # инфо-блок про шум
-        if abs(net) < 500:
-            text += "🟡 net < ~500 BTC за час = шум\n\n"
+        if abs(net) < 100:
+            text += "🟡 net < ~100 BTC за час = шум\n\n"
 
         if price_change is not None:
             text += f"💰 BTC price change: {price_change:.2f}%\n\n"
