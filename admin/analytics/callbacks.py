@@ -1,5 +1,6 @@
 # admin/analytics/callbacks.py
 import os
+import time
 from aiogram.types import FSInputFile
 from config import Config
 from logger import get_logger
@@ -57,7 +58,6 @@ async def handle_tables_info(callback):
             reply_markup=get_admin_to_main_bt()
         )
 
-
 async def handle_cluster_health(callback):
     """
     Показывает метрику здоровья кластеризации (последние 2 часа)
@@ -114,7 +114,6 @@ async def handle_cluster_health(callback):
             reply_markup=get_admin_to_main_bt()
         )
 
-
 async def handle_top_clusters(callback):
     """
     Показывает крупнейшие кластеры
@@ -157,43 +156,102 @@ async def handle_top_clusters(callback):
             reply_markup=get_admin_to_main_bt()
         )
 
-
 async def handle_exchange_flow_1h(callback):
     """
     Показывает притоки и оттоки BTC на биржи за последний час
+    + internal flows
+    + изменение цены BTC
     """
     try:
         conn = get_db()
         cursor = conn.cursor()
 
+        now = int(time.time())
+        hour_ago = now - 3600
+
+        # flows
         cursor.execute("""
             SELECT
                 SUM(CASE WHEN flow_type = 'DEPOSIT' THEN btc ELSE 0 END) as inflow,
-                SUM(CASE WHEN flow_type = 'WITHDRAW' THEN btc ELSE 0 END) as outflow
+                SUM(CASE WHEN flow_type = 'WITHDRAW' THEN btc ELSE 0 END) as outflow,
+                SUM(CASE WHEN flow_type = 'INTERNAL' THEN btc ELSE 0 END) as internal
             FROM exchange_flow
-            WHERE ts > CAST(strftime('%s','now') AS INTEGER) - 3600
-        """)
+            WHERE ts > ?
+        """, (hour_ago,))
 
         row = cursor.fetchone()
-        conn.close()
 
         inflow = row["inflow"] or 0
         outflow = row["outflow"] or 0
+        internal = row["internal"] or 0
+
         net = inflow - outflow
+
+        # -----------------------------------------
+        # BTC price change
+        # -----------------------------------------
+
+        cursor.execute("""
+            SELECT price
+            FROM btc_price
+            WHERE ts >= ?
+            ORDER BY ts ASC
+            LIMIT 1
+        """, (hour_ago,))
+
+        start_row = cursor.fetchone()
+
+        cursor.execute("""
+            SELECT price
+            FROM btc_price
+            ORDER BY ts DESC
+            LIMIT 1
+        """)
+
+        end_row = cursor.fetchone()
+
+        conn.close()
+
+        price_change = None
+
+        if start_row and end_row:
+            start_price = start_row["price"]
+            end_price = end_row["price"]
+
+            if start_price:
+                price_change = (end_price - start_price) / start_price * 100
+
+        # -----------------------------------------
+        # text
+        # -----------------------------------------
 
         text = (
             "📈 Exchange flow (last 1h)\n\n"
             f"⬇️ inflow: {inflow:.2f} BTC\n"
-            f"⬆️ outflow: {outflow:.2f} BTC\n\n"
-            f"📊 net flow: {net:.2f} BTC\n\n"
+            f"⬆️ outflow: {outflow:.2f} BTC\n"
+            f"🔁 internal: {internal:.2f} BTC\n\n"
+            f"📊 net flow: {net:.2f} BTC\n"
         )
 
-        if net > 0:
-            text += "⚠️ давление продаж (BTC поступает на биржи)"
-        elif net < 0:
-            text += "🚀 давление покупок (BTC выводится с бирж)"
+        # инфо-блок про шум
+        if abs(net) < 500:
+            text += "🟡 net < ~500 BTC за час = шум\n\n"
         else:
-            text += "➖ нейтральный поток"
+            text += "\n"
+
+        if price_change is not None:
+            text += f"💰 BTC price change: {price_change:.2f}%\n\n"
+
+        # -----------------------------------------
+        # market interpretation
+        # -----------------------------------------
+
+        if net > 0:
+            text += "🔴 sell pressure (BTC поступает на биржи)"
+        elif net < 0:
+            text += "🟢 accumulation (BTC выводится с бирж)"
+        else:
+            text += "🟡 neutral flow"
 
         await callback.message.edit_text(
             text,
@@ -206,7 +264,6 @@ async def handle_exchange_flow_1h(callback):
             "❌ Ошибка получения exchange flow",
             reply_markup=get_admin_to_main_bt()
         )
-
 
 async def handle_whale_pressure_15m(callback):
     """
@@ -242,23 +299,37 @@ async def handle_whale_pressure_15m(callback):
 
         net = inflow - outflow
 
+        # -----------------------------------------
+        # text formatting
+        # -----------------------------------------
+
         text = (
             "🧠 Whale pressure (15m)\n\n"
             f"⬇️ whale → exchange: {inflow:.2f} BTC\n"
             f"⬆️ exchange → whale: {outflow:.2f} BTC\n\n"
-            f"📊 net: {net:.2f} BTC\n\n"
+            f"📊 net: {net:.2f} BTC\n"
         )
 
-        if net > 100:
-            text += "🔥 сильное давление продаж"
-        elif net > 20:
-            text += "⚠️ умеренное давление продаж"
-        elif net < -100:
-            text += "🚀 сильное давление покупок"
-        elif net < -20:
-            text += "📈 умеренное давление покупок"
+        # шум / мало активности
+        if abs(net) < 20:
+            text += "🟡 net < ~20 BTC → шум / мало активности\n\n"
         else:
-            text += "➖ нейтральное давление"
+            text += "\n"
+
+        # -----------------------------------------
+        # market interpretation
+        # -----------------------------------------
+
+        if net > 100:
+            text += "🔴 🔥 сильное давление продаж (BTC поступает на биржи)"
+        elif net > 20:
+            text += "🟠 ⚠️ умеренное давление продаж"
+        elif net < -100:
+            text += "🟢 🚀 сильное давление покупок (BTC выводится с бирж)"
+        elif net < -20:
+            text += "🟢 📈 умеренное давление покупок"
+        else:
+            text += "🟡 ➖ нейтральное давление"
 
         await callback.message.edit_text(
             text,
@@ -271,7 +342,7 @@ async def handle_whale_pressure_15m(callback):
             "❌ Ошибка анализа whale pressure",
             reply_markup=get_admin_to_main_bt()
         )
-        
+
 async def handle_flow_pipeline_check(callback):
     """
     Проверка pipeline:
