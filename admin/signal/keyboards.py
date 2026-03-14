@@ -20,6 +20,12 @@ def get_signal_kb():
                     text="💰 Закрыть по рынку",
                     callback_data="close:market"
                 )
+            ],
+                        [
+                InlineKeyboardButton(
+                    text="⬅️ Назад",
+                    callback_data="admin:deal"
+                )
             ]
         ]
     )
@@ -36,7 +42,7 @@ def get_reset_stats_kb():
             [
                 InlineKeyboardButton(
                     text="⬅️ Назад",
-                    callback_data="admin_main"
+                    callback_data="admin:deal"
                 )
             ]
         ]
@@ -57,3 +63,36 @@ def get_reset_stats_confirm_kb():
             ]
         ]
     )
+
+def get_auto_mode_kb(auto_enabled: bool):
+    if auto_enabled:
+        btn = InlineKeyboardButton(
+            text="⛔ Стоп авто",
+            callback_data="auto:stop"
+        )
+    else:
+        btn = InlineKeyboardButton(
+            text="🚀 Авто режим",
+            callback_data="auto:start"
+        )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [btn],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад",
+                    callback_data="admin:deal"
+                )
+            ]
+        ]
+    )
+ 
+def get_signal_main_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎯 Сигнал", callback_data="signal:get")],
+        [InlineKeyboardButton(text="🤖 Авто режим", callback_data="auto:menu")],
+        [InlineKeyboardButton(text="💰 Баланс", callback_data="admin:show_balance")],
+        [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin:edit_balance")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_main")]
+    ])

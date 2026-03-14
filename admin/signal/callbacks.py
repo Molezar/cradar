@@ -12,7 +12,8 @@ from admin.keyboards import get_admin_to_main_bt
 from .keyboards import (
     get_signal_kb,
     get_reset_stats_kb,
-    get_reset_stats_confirm_kb
+    get_reset_stats_confirm_kb,
+    get_auto_mode_kb
 )
 
 logger = get_logger(__name__)
@@ -58,7 +59,6 @@ async def auto_menu(callback: types.CallbackQuery):
     text = "🤖 <b>Авто режим</b>\n\n"
     text += "🟢 Включен" if auto else "🔴 Выключен"
 
-    from admin.keyboards import get_auto_mode_kb
     await callback.message.edit_text(
         text,
         reply_markup=get_auto_mode_kb(auto),

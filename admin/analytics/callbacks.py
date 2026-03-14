@@ -4,6 +4,7 @@ from aiogram.types import FSInputFile
 from config import Config
 from logger import get_logger
 from admin.keyboards import get_admin_to_main_bt
+from .keyboards import get_analytics_kb
 from database.database import get_db
 
 logger = get_logger(__name__)
@@ -46,7 +47,7 @@ async def handle_tables_info(callback):
 
         await callback.message.edit_text(
             text,
-            reply_markup=get_admin_to_main_bt()
+            reply_markup=get_analytics_kb()
         )
 
     except Exception as e:
@@ -103,7 +104,7 @@ async def handle_cluster_health(callback):
 
         await callback.message.edit_text(
             text,
-            reply_markup=get_admin_to_main_bt()
+            reply_markup=get_analytics_kb()
         )
 
     except Exception as e:
@@ -146,7 +147,7 @@ async def handle_top_clusters(callback):
 
         await callback.message.edit_text(
             text,
-            reply_markup=get_admin_to_main_bt()
+            reply_markup=get_analytics_kb()
         )
 
     except Exception as e:
@@ -196,7 +197,7 @@ async def handle_exchange_flow_1h(callback):
 
         await callback.message.edit_text(
             text,
-            reply_markup=get_admin_to_main_bt()
+            reply_markup=get_analytics_kb()
         )
 
     except Exception as e:
@@ -261,7 +262,7 @@ async def handle_whale_pressure_15m(callback):
 
         await callback.message.edit_text(
             text,
-            reply_markup=get_admin_to_main_bt()
+            reply_markup=get_analytics_kb()
         )
 
     except Exception as e:

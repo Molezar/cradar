@@ -19,6 +19,8 @@ from admin.main.callbacks import (
     handle_download_migrations_log,
     handle_view_volume
 )
+
+from admin.signal.keyboards import  get_signal_main_kb
 from admin.signal.callbacks import (
     handle_signal,
     handle_cancel_trade,
@@ -31,8 +33,8 @@ from admin.signal.callbacks import (
     reset_stats,
     handle_close_by_market
 )
-from admin.analytics.keyboards import  get_analytics_kb
 
+from admin.analytics.keyboards import  get_analytics_kb
 from admin.analytics.callbacks import (
     handle_tables_info,
     handle_cluster_health,
@@ -40,6 +42,7 @@ from admin.analytics.callbacks import (
     handle_exchange_flow_1h,
     handle_whale_pressure_15m
 )
+
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from admin.signal.messages import handle_new_balance
@@ -166,6 +169,11 @@ async def handle_admin_callbacks(callback: types.CallbackQuery, state: FSMContex
             
             # ✅ FSMContext уже передан в callback, используем его напрямую
             await state.set_state(BalanceStates.awaiting_new_balance)
+        elif data == "admin:analytics":
+            await callback.message.edit_text(
+                "🎯 Сделка",
+                reply_markup=get_signal_main_kb()
+            )
             
         elif data == "admin:analytics":
             await callback.message.edit_text(
