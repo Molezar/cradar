@@ -230,10 +230,10 @@ async def handle_flow_pipeline_check(callback):
             "❌ Ошибка проверки pipeline",
             reply_markup=get_admin_to_main_bt()
         )
-        
+
 async def handle_research_correlation(callback):
     """
-    Строит корреляцию между:
+    Анализ качества сигналов:
     whale_net → price_15m
     exchange_net → price_1h
     """
@@ -271,29 +271,63 @@ async def handle_research_correlation(callback):
         exchange_x = []
         exchange_y = []
 
+        whale_correct = 0
+        whale_total = 0
+        whale_moves = []
+
+        exchange_correct = 0
+        exchange_total = 0
+        exchange_moves = []
+
         ts_min = rows[0]["ts"]
         ts_max = rows[-1]["ts"]
 
         for r in rows:
 
             price = r["price"]
-
             if price == 0:
                 continue
 
-            # доходность
             ret_15m = (r["price_15m"] - price) / price
             ret_1h = (r["price_1h"] - price) / price
 
-            whale_x.append(r["whale_net"])
+            whale_net = r["whale_net"]
+            exchange_net = r["exchange_net"]
+
+            # ---------- корреляция ----------
+            whale_x.append(whale_net)
             whale_y.append(ret_15m)
 
-            exchange_x.append(r["exchange_net"])
+            exchange_x.append(exchange_net)
             exchange_y.append(ret_1h)
 
-        def corr(x, y):
-            n = len(x)
+            # ---------- whale accuracy ----------
+            if abs(whale_net) > 1:  # фильтр шума
 
+                whale_total += 1
+                whale_moves.append(abs(ret_15m))
+
+                predicted = -1 if whale_net > 0 else 1
+                actual = 1 if ret_15m > 0 else -1
+
+                if predicted == actual:
+                    whale_correct += 1
+
+            # ---------- exchange accuracy ----------
+            if abs(exchange_net) > 1:
+
+                exchange_total += 1
+                exchange_moves.append(abs(ret_1h))
+
+                predicted = -1 if exchange_net > 0 else 1
+                actual = 1 if ret_1h > 0 else -1
+
+                if predicted == actual:
+                    exchange_correct += 1
+
+        def corr(x, y):
+
+            n = len(x)
             if n < 5:
                 return 0
 
@@ -313,36 +347,30 @@ async def handle_research_correlation(callback):
         whale_corr = corr(whale_x, whale_y)
         exchange_corr = corr(exchange_x, exchange_y)
 
+        whale_acc = (whale_correct / whale_total * 100) if whale_total else 0
+        exchange_acc = (exchange_correct / exchange_total * 100) if exchange_total else 0
+
+        whale_avg_move = (sum(whale_moves) / len(whale_moves) * 100) if whale_moves else 0
+        exchange_avg_move = (sum(exchange_moves) / len(exchange_moves) * 100) if exchange_moves else 0
+
         samples = len(rows)
 
         text = (
-            "📈 Market signal correlation\n\n"
+            "📈 Market signal calibration\n\n"
 
             f"samples: {samples}\n"
             f"period: {time.strftime('%Y-%m-%d %H:%M', time.gmtime(ts_min))}"
             f" → {time.strftime('%Y-%m-%d %H:%M', time.gmtime(ts_max))}\n\n"
 
-            f"🧠 whale_net → price_15m\n"
-            f"corr: {whale_corr:.3f}\n\n"
+            f"🧠 whale pressure (15m)\n"
+            f"corr: {whale_corr:.3f}\n"
+            f"accuracy: {whale_acc:.1f}%\n"
+            f"avg move: {whale_avg_move:.3f}%\n\n"
 
-            f"📊 exchange_net → price_1h\n"
-            f"corr: {exchange_corr:.3f}\n\n"
-        )
-
-        # интерпретация
-        def explain(v):
-            a = abs(v)
-
-            if a > 0.6:
-                return "🔥 сильная корреляция"
-            elif a > 0.3:
-                return "⚠️ слабая корреляция"
-            else:
-                return "❌ почти нет связи"
-
-        text += (
-            f"whale: {explain(whale_corr)}\n"
-            f"exchange: {explain(exchange_corr)}"
+            f"📊 exchange flow (1h)\n"
+            f"corr: {exchange_corr:.3f}\n"
+            f"accuracy: {exchange_acc:.1f}%\n"
+            f"avg move: {exchange_avg_move:.3f}%"
         )
 
         await callback.message.edit_text(
@@ -357,3 +385,4 @@ async def handle_research_correlation(callback):
             "❌ Ошибка расчета корреляции",
             reply_markup=get_admin_to_main_bt()
         )
+ 
