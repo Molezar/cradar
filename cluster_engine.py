@@ -176,7 +176,6 @@ def detect_multi_input_exchange(cursor, txids, cluster_id, now, cache):
 
 
 def expand_exchange_cluster_from_db(cursor, cluster_id, name):
-    logger.info(f"[CLUSTER] Expanding {name} from DB")
 
     now = int(time.time())
     since = now - (LOOKBACK_DAYS * 24 * 3600)
@@ -188,11 +187,9 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
 
     change_learned = detect_change_addresses(cursor, txids, cluster_id, now, cache)
     if change_learned:
-        logger.info(f"[CLUSTER] {name} learned {change_learned} change addresses")
 
     multi_learned = detect_multi_input_exchange(cursor, txids, cluster_id, now, cache)
     if multi_learned:
-        logger.info(f"[CLUSTER] {name} learned {multi_learned} multi-input addresses")
 
     placeholders = ",".join("?" * len(txids))
     rows = cursor.execute(f"""
@@ -216,7 +213,6 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
             WHERE id=?
         """, (cluster_id, now, cluster_id))
         new_size = cursor.execute("SELECT size FROM clusters WHERE id=?", (cluster_id,)).fetchone()["size"]
-        logger.info(f"[CLUSTER] {name} size now {new_size}")
 
 
 def run_cluster_expansion():
