@@ -186,10 +186,8 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
         return
 
     change_learned = detect_change_addresses(cursor, txids, cluster_id, now, cache)
-    if change_learned:
 
     multi_learned = detect_multi_input_exchange(cursor, txids, cluster_id, now, cache)
-    if multi_learned:
 
     placeholders = ",".join("?" * len(txids))
     rows = cursor.execute(f"""
@@ -212,7 +210,6 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
                 last_updated=?
             WHERE id=?
         """, (cluster_id, now, cluster_id))
-        new_size = cursor.execute("SELECT size FROM clusters WHERE id=?", (cluster_id,)).fetchone()["size"]
 
 
 def run_cluster_expansion():
