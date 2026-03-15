@@ -36,12 +36,17 @@ from admin.signal.callbacks import (
 
 from admin.analytics.keyboards import  get_analytics_kb
 from admin.analytics.callbacks import (
+    handle_exchange_flow_1h,
+    handle_whale_pressure_15m
+)
+
+from admin.diagnostics.keyboards import  get_diagnostics_kb
+from admin.diagnostics.callbacks import (
     handle_tables_info,
     handle_cluster_health,
     handle_top_clusters,
-    handle_exchange_flow_1h,
-    handle_whale_pressure_15m,
-    handle_flow_pipeline_check
+    handle_flow_pipeline_check,
+    handle_research_correlation
 )
 
 from aiogram.fsm.state import StatesGroup, State
@@ -71,23 +76,22 @@ async def handle_admin_callbacks(callback: types.CallbackQuery, state: FSMContex
                 "Вы действительно хотите скачать базу данных?",
                 reply_markup=get_download_db_confirm_kb()
             )
-        elif data == "admin:tables_info":
-            await handle_tables_info(callback)
-            
-        elif data == "admin:cluster_health":
-            await handle_cluster_health(callback)
-        
-        elif data == "admin:top_clusters":
-            await handle_top_clusters(callback)
         
         elif data == "admin:exchange_flow_1h":
             await handle_exchange_flow_1h(callback)
-        
         elif data == "admin:whale_pressure_15m":
-            await handle_whale_pressure_15m(callback) 
-        
+            await handle_whale_pressure_15m(callback)
+            
+        elif data == "admin:tables_info":
+            await handle_tables_info(callback)
+        elif data == "admin:cluster_health":
+            await handle_cluster_health(callback)
+        elif data == "admin:top_clusters":
+            await handle_top_clusters(callback)
         elif data == "admin:flow_pipeline_check":
             await handle_flow_pipeline_check(callback)
+        elif data == "admin:research_correlation":
+            await handle_research_correlation(callback)
         
         elif data == "admin:download_db":
             await handle_download_db(callback)
