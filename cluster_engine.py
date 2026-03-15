@@ -161,7 +161,8 @@ def detect_multi_input_exchange(cursor, txids, cluster_id, now, cache):
         # хотя бы один адрес уже в кластере
         has_in_cluster = False
         for a in addresses:
-            cached_cluster = cache.get(a, {"cluster_id": None})["cluster_id"]
+            cached = cache.get(a)
+            cached_cluster = cached["cluster_id"] if cached else None
             if cached_cluster == cluster_id:
                 has_in_cluster = True
                 break
