@@ -6,8 +6,7 @@ import time
 
 DB_PATH = Path(Config.DB_PATH)
 
-
-def get_db(as_dict=True, retries=3, delay=0.3):
+def get_db(as_dict=True, retries=10, delay=0.3):
 
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -18,17 +17,19 @@ def get_db(as_dict=True, retries=3, delay=0.3):
                 timeout=60,
                 check_same_thread=False
             )
+
             if as_dict:
                 conn.row_factory = sqlite3.Row
             else:
                 conn.row_factory = None
-
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA synchronous=NORMAL;")
+                
             conn.execute("PRAGMA busy_timeout=5000;")
             conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA temp_store = MEMORY;")
+            conn.execute("PRAGMA mmap_size = 1000000000;")
 
             return conn
+
         except sqlite3.OperationalError as e:
             if "database is locked" in str(e):
                 time.sleep(delay)
@@ -37,13 +38,14 @@ def get_db(as_dict=True, retries=3, delay=0.3):
 
     raise Exception("Database is locked after retries")
 
-
 def init_db():
     print("Python sqlite3 module version:", sqlite3.version)
     print("SQLite library version:", sqlite3.sqlite_version)
 
     conn = get_db()
     c = conn.cursor()
+    c.execute("PRAGMA journal_mode=WAL;")
+    c.execute("PRAGMA synchronous=NORMAL;")
 
     # =====================================================
     # Whale TX
