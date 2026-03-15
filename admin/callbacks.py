@@ -189,6 +189,12 @@ async def handle_admin_callbacks(callback: types.CallbackQuery, state: FSMContex
                 reply_markup=get_analytics_kb()
             )
             
+        elif data == "admin:diagnostics":
+            await callback.message.edit_text(
+                "🛠 Диагностика",
+                reply_markup=get_diagnostics_kb()
+            )
+        
         elif data == "admin_main":
             await callback.message.edit_text(
                 "👑 Админ-панель",

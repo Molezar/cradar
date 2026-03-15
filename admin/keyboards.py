@@ -34,6 +34,7 @@ def get_recreate_db_confirm_kb():
 def get_admin_main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Аналитика", callback_data="admin:analytics")],
+        [InlineKeyboardButton(text="🛠 Диагностика", callback_data="admin:diagnostics")],
         [InlineKeyboardButton(text="🎯 Сделка", callback_data="admin:deal")],
         [InlineKeyboardButton(text="💾 Скачать БД", callback_data="admin:download_db_confirm")],
         [InlineKeyboardButton(text="📜 Скачать лог миграций", callback_data="admin:download_migrations_log_confirm")],
