@@ -236,6 +236,11 @@ async def handle_research_correlation(callback):
     Анализ качества сигналов:
     whale_net → price_15m
     exchange_net → price_1h
+
+    Реакции рынка:
+    1) endpoint (цена через 1h)
+    2) max move за час
+    3) avg move за час
     """
 
     try:
@@ -277,12 +282,17 @@ async def handle_research_correlation(callback):
 
         exchange_correct = 0
         exchange_total = 0
-        exchange_moves = []
+
+        exchange_endpoint_moves = []
+        exchange_max_moves = []
+        exchange_avg_window_moves = []
 
         ts_min = rows[0]["ts"]
         ts_max = rows[-1]["ts"]
 
-        for r in rows:
+        n = len(rows)
+
+        for i, r in enumerate(rows):
 
             price = r["price"]
             if price == 0:
@@ -302,7 +312,7 @@ async def handle_research_correlation(callback):
             exchange_y.append(ret_1h)
 
             # ---------- whale accuracy ----------
-            if abs(whale_net) > 1:  # фильтр шума
+            if abs(whale_net) > 1:
 
                 whale_total += 1
                 whale_moves.append(abs(ret_15m))
@@ -317,13 +327,38 @@ async def handle_research_correlation(callback):
             if abs(exchange_net) > 1:
 
                 exchange_total += 1
-                exchange_moves.append(abs(ret_1h))
 
                 predicted = -1 if exchange_net > 0 else 1
                 actual = 1 if ret_1h > 0 else -1
 
                 if predicted == actual:
                     exchange_correct += 1
+
+                # ---------- endpoint move ----------
+                exchange_endpoint_moves.append(abs(ret_1h))
+
+                # ---------- окно 1h (≈12 записей) ----------
+                window = rows[i+1:i+13]
+
+                if window:
+
+                    prices = [w["price"] for w in window if w["price"]]
+
+                    if prices:
+
+                        max_price = max(prices)
+                        min_price = min(prices)
+                        avg_price = sum(prices) / len(prices)
+
+                        max_move = max(
+                            abs((max_price - price) / price),
+                            abs((min_price - price) / price)
+                        )
+
+                        avg_move = abs((avg_price - price) / price)
+
+                        exchange_max_moves.append(max_move)
+                        exchange_avg_window_moves.append(avg_move)
 
         def corr(x, y):
 
@@ -351,7 +386,10 @@ async def handle_research_correlation(callback):
         exchange_acc = (exchange_correct / exchange_total * 100) if exchange_total else 0
 
         whale_avg_move = (sum(whale_moves) / len(whale_moves) * 100) if whale_moves else 0
-        exchange_avg_move = (sum(exchange_moves) / len(exchange_moves) * 100) if exchange_moves else 0
+
+        endpoint_avg = (sum(exchange_endpoint_moves) / len(exchange_endpoint_moves) * 100) if exchange_endpoint_moves else 0
+        max_avg = (sum(exchange_max_moves) / len(exchange_max_moves) * 100) if exchange_max_moves else 0
+        avg_window = (sum(exchange_avg_window_moves) / len(exchange_avg_window_moves) * 100) if exchange_avg_window_moves else 0
 
         samples = len(rows)
 
@@ -369,8 +407,11 @@ async def handle_research_correlation(callback):
 
             f"📊 exchange flow (1h)\n"
             f"corr: {exchange_corr:.3f}\n"
-            f"accuracy: {exchange_acc:.1f}%\n"
-            f"avg move: {exchange_avg_move:.3f}%"
+            f"accuracy: {exchange_acc:.1f}%\n\n"
+
+            f"reaction (endpoint): {endpoint_avg:.3f}%\n"
+            f"reaction (max 1h): {max_avg:.3f}%\n"
+            f"reaction (avg 1h): {avg_window:.3f}%"
         )
 
         await callback.message.edit_text(
