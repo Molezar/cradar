@@ -237,10 +237,8 @@ async def handle_research_correlation(callback):
     whale_net → price_15m
     exchange_net → price_1h
 
-    Реакции рынка:
-    1) endpoint (цена через 1h)
-    2) max move за час
-    3) avg move за час
+    + тест:
+    exchange_net_delta
     """
 
     try:
@@ -276,12 +274,20 @@ async def handle_research_correlation(callback):
         exchange_x = []
         exchange_y = []
 
+        # NEW
+        exchange_delta_x = []
+        exchange_delta_y = []
+
         whale_correct = 0
         whale_total = 0
         whale_moves = []
 
         exchange_correct = 0
         exchange_total = 0
+
+        # NEW
+        exchange_delta_correct = 0
+        exchange_delta_total = 0
 
         exchange_endpoint_moves = []
         exchange_max_moves = []
@@ -290,7 +296,7 @@ async def handle_research_correlation(callback):
         ts_min = rows[0]["ts"]
         ts_max = rows[-1]["ts"]
 
-        n = len(rows)
+        prev_exchange_net = None
 
         for i, r in enumerate(rows):
 
@@ -304,6 +310,13 @@ async def handle_research_correlation(callback):
             whale_net = r["whale_net"]
             exchange_net = r["exchange_net"]
 
+            # ---------- DELTA ----------
+            exchange_delta = None
+            if prev_exchange_net is not None:
+                exchange_delta = exchange_net - prev_exchange_net
+
+            prev_exchange_net = exchange_net
+
             # ---------- корреляция ----------
             whale_x.append(whale_net)
             whale_y.append(ret_15m)
@@ -311,9 +324,12 @@ async def handle_research_correlation(callback):
             exchange_x.append(exchange_net)
             exchange_y.append(ret_1h)
 
-            # ---------- whale accuracy ----------
-            if abs(whale_net) > 1:
+            if exchange_delta is not None:
+                exchange_delta_x.append(exchange_delta)
+                exchange_delta_y.append(ret_1h)
 
+            # ---------- whale ----------
+            if abs(whale_net) > 1:
                 whale_total += 1
                 whale_moves.append(abs(ret_15m))
 
@@ -323,9 +339,8 @@ async def handle_research_correlation(callback):
                 if predicted == actual:
                     whale_correct += 1
 
-            # ---------- exchange accuracy ----------
+            # ---------- exchange ----------
             if abs(exchange_net) > 1:
-
                 exchange_total += 1
 
                 predicted = -1 if exchange_net > 0 else 1
@@ -334,18 +349,15 @@ async def handle_research_correlation(callback):
                 if predicted == actual:
                     exchange_correct += 1
 
-                # ---------- endpoint move ----------
                 exchange_endpoint_moves.append(abs(ret_1h))
 
-                # ---------- окно 1h (≈12 записей) ----------
+                # окно 1h (~12 записей)
                 window = rows[i+1:i+13]
 
                 if window:
-
                     prices = [w["price"] for w in window if w["price"]]
 
                     if prices:
-
                         max_price = max(prices)
                         min_price = min(prices)
                         avg_price = sum(prices) / len(prices)
@@ -360,8 +372,17 @@ async def handle_research_correlation(callback):
                         exchange_max_moves.append(max_move)
                         exchange_avg_window_moves.append(avg_move)
 
-        def corr(x, y):
+            # ---------- exchange DELTA ----------
+            if exchange_delta is not None and abs(exchange_delta) > 1:
+                exchange_delta_total += 1
 
+                predicted = -1 if exchange_delta > 0 else 1
+                actual = 1 if ret_1h > 0 else -1
+
+                if predicted == actual:
+                    exchange_delta_correct += 1
+
+        def corr(x, y):
             n = len(x)
             if n < 5:
                 return 0
@@ -381,9 +402,11 @@ async def handle_research_correlation(callback):
 
         whale_corr = corr(whale_x, whale_y)
         exchange_corr = corr(exchange_x, exchange_y)
+        exchange_delta_corr = corr(exchange_delta_x, exchange_delta_y)
 
         whale_acc = (whale_correct / whale_total * 100) if whale_total else 0
         exchange_acc = (exchange_correct / exchange_total * 100) if exchange_total else 0
+        exchange_delta_acc = (exchange_delta_correct / exchange_delta_total * 100) if exchange_delta_total else 0
 
         whale_avg_move = (sum(whale_moves) / len(whale_moves) * 100) if whale_moves else 0
 
@@ -409,6 +432,10 @@ async def handle_research_correlation(callback):
             f"corr: {exchange_corr:.3f}\n"
             f"accuracy: {exchange_acc:.1f}%\n\n"
 
+            f"⚡ exchange DELTA (test)\n"
+            f"corr: {exchange_delta_corr:.3f}\n"
+            f"accuracy: {exchange_delta_acc:.1f}%\n\n"
+
             f"reaction (endpoint): {endpoint_avg:.3f}%\n"
             f"reaction (max 1h): {max_avg:.3f}%\n"
             f"reaction (avg 1h): {avg_window:.3f}%"
@@ -426,4 +453,3 @@ async def handle_research_correlation(callback):
             "❌ Ошибка расчета корреляции",
             reply_markup=get_admin_to_main_bt()
         )
- 
