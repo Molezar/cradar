@@ -22,8 +22,9 @@ def get_db(as_dict=True, retries=10, delay=0.3):
                 conn.row_factory = sqlite3.Row
             else:
                 conn.row_factory = None
-                
-            conn.execute("PRAGMA busy_timeout=5000;")
+            
+            conn.execute("PRAGMA journal_mode=WAL;")    
+            conn.execute("PRAGMA busy_timeout=10000;")
             conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("PRAGMA temp_store = MEMORY;")
             conn.execute("PRAGMA mmap_size = 1000000000;")
