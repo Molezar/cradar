@@ -1,7 +1,5 @@
 # admin/diagnostics/callbacks.py
-import os
 import time
-from aiogram.types import FSInputFile
 from config import Config
 from logger import get_logger
 from admin.keyboards import get_admin_to_main_bt
@@ -235,10 +233,10 @@ async def handle_research_correlation(callback):
     """
     Анализ качества сигналов:
     whale_net → price_15m
-    exchange_net → price_1h
-
-    + тест:
-    exchange_net_delta
+    exchange_net_ratio → price_1h
+    + signal = exchange_ratio * volatility
+    + кластерная концентрация
+    + P(up|strong inflow), P(down|strong outflow)
     """
 
     try:
@@ -246,19 +244,12 @@ async def handle_research_correlation(callback):
         cursor = conn.cursor()
 
         rows = cursor.execute("""
-            SELECT
-                ts,
-                whale_net,
-                exchange_net,
-                price,
-                price_15m,
-                price_1h
+            SELECT ts, whale_net, exchange_net, exchange_net_ratio,
+                   volatility, cluster_concentration, price, price_15m, price_1h
             FROM research_market
-            WHERE price_15m IS NOT NULL
-              AND price_1h IS NOT NULL
+            WHERE price_15m IS NOT NULL AND price_1h IS NOT NULL
             ORDER BY ts
         """).fetchall()
-
         conn.close()
 
         if not rows:
@@ -268,177 +259,38 @@ async def handle_research_correlation(callback):
             )
             return
 
-        whale_x = []
-        whale_y = []
+        # --------------------------
+        # percentiles p90/p95
+        # --------------------------
+        def percentile(arr, p, default=0):
+            if len(arr) < 20: return default
+            return sorted(arr)[int(len(arr)*p)]
 
-        exchange_x = []
-        exchange_y = []
+        signals = [abs((r["exchange_net_ratio"] or 0)*(r["volatility"] or 0)) for r in rows]
+        clusters = [r["cluster_concentration"] or 0 for r in rows]
 
-        # NEW
-        exchange_delta_x = []
-        exchange_delta_y = []
+        sig_p90, sig_p95 = percentile(signals, 0.9, 0.001), percentile(signals, 0.95, 0.002)
+        clust_p90, clust_p95 = percentile(clusters, 0.9, 0.1), percentile(clusters, 0.95, 0.2)
 
-        whale_correct = 0
-        whale_total = 0
-        whale_moves = []
+        # --------------------------
+        # strong signal stats
+        # --------------------------
+        strong_inflow_up = sum(1 for r in rows if r["exchange_net_ratio"] > sig_p90 and (r["price_1h"] - r["price"])/r["price"] > 0)
+        strong_outflow_down = sum(1 for r in rows if r["exchange_net_ratio"] < -sig_p90 and (r["price_1h"] - r["price"])/r["price"] < 0)
+        strong_total = sum(1 for r in rows if abs(r["exchange_net_ratio"] or 0) > sig_p90)
+        p_up = strong_inflow_up / strong_total*100 if strong_total else 0
+        p_down = strong_outflow_down / strong_total*100 if strong_total else 0
 
-        exchange_correct = 0
-        exchange_total = 0
-
-        # NEW
-        exchange_delta_correct = 0
-        exchange_delta_total = 0
-
-        exchange_endpoint_moves = []
-        exchange_max_moves = []
-        exchange_avg_window_moves = []
-
-        ts_min = rows[0]["ts"]
-        ts_max = rows[-1]["ts"]
-
-        prev_exchange_net = None
-
-        for i, r in enumerate(rows):
-
-            price = r["price"]
-            if price == 0:
-                continue
-
-            ret_15m = (r["price_15m"] - price) / price
-            ret_1h = (r["price_1h"] - price) / price
-
-            whale_net = r["whale_net"]
-            exchange_net = r["exchange_net"]
-
-            # ---------- DELTA ----------
-            exchange_delta = None
-            if prev_exchange_net is not None:
-                exchange_delta = exchange_net - prev_exchange_net
-
-            prev_exchange_net = exchange_net
-
-            # ---------- корреляция ----------
-            whale_x.append(whale_net)
-            whale_y.append(ret_15m)
-
-            exchange_x.append(exchange_net)
-            exchange_y.append(ret_1h)
-
-            if exchange_delta is not None:
-                exchange_delta_x.append(exchange_delta)
-                exchange_delta_y.append(ret_1h)
-
-            # ---------- whale ----------
-            if abs(whale_net) > 1:
-                whale_total += 1
-                whale_moves.append(abs(ret_15m))
-
-                predicted = -1 if whale_net > 0 else 1
-                actual = 1 if ret_15m > 0 else -1
-
-                if predicted == actual:
-                    whale_correct += 1
-
-            # ---------- exchange ----------
-            if abs(exchange_net) > 1:
-                exchange_total += 1
-
-                predicted = -1 if exchange_net > 0 else 1
-                actual = 1 if ret_1h > 0 else -1
-
-                if predicted == actual:
-                    exchange_correct += 1
-
-                exchange_endpoint_moves.append(abs(ret_1h))
-
-                # окно 1h (~12 записей)
-                window = rows[i+1:i+13]
-
-                if window:
-                    prices = [w["price"] for w in window if w["price"]]
-
-                    if prices:
-                        max_price = max(prices)
-                        min_price = min(prices)
-                        avg_price = sum(prices) / len(prices)
-
-                        max_move = max(
-                            abs((max_price - price) / price),
-                            abs((min_price - price) / price)
-                        )
-
-                        avg_move = abs((avg_price - price) / price)
-
-                        exchange_max_moves.append(max_move)
-                        exchange_avg_window_moves.append(avg_move)
-
-            # ---------- exchange DELTA ----------
-            if exchange_delta is not None and abs(exchange_delta) > 1:
-                exchange_delta_total += 1
-
-                predicted = -1 if exchange_delta > 0 else 1
-                actual = 1 if ret_1h > 0 else -1
-
-                if predicted == actual:
-                    exchange_delta_correct += 1
-
-        def corr(x, y):
-            n = len(x)
-            if n < 5:
-                return 0
-
-            mx = sum(x) / n
-            my = sum(y) / n
-
-            num = sum((a-mx)*(b-my) for a,b in zip(x,y))
-
-            den_x = sum((a-mx)**2 for a in x) ** 0.5
-            den_y = sum((b-my)**2 for b in y) ** 0.5
-
-            if den_x == 0 or den_y == 0:
-                return 0
-
-            return num / (den_x * den_y)
-
-        whale_corr = corr(whale_x, whale_y)
-        exchange_corr = corr(exchange_x, exchange_y)
-        exchange_delta_corr = corr(exchange_delta_x, exchange_delta_y)
-
-        whale_acc = (whale_correct / whale_total * 100) if whale_total else 0
-        exchange_acc = (exchange_correct / exchange_total * 100) if exchange_total else 0
-        exchange_delta_acc = (exchange_delta_correct / exchange_delta_total * 100) if exchange_delta_total else 0
-
-        whale_avg_move = (sum(whale_moves) / len(whale_moves) * 100) if whale_moves else 0
-
-        endpoint_avg = (sum(exchange_endpoint_moves) / len(exchange_endpoint_moves) * 100) if exchange_endpoint_moves else 0
-        max_avg = (sum(exchange_max_moves) / len(exchange_max_moves) * 100) if exchange_max_moves else 0
-        avg_window = (sum(exchange_avg_window_moves) / len(exchange_avg_window_moves) * 100) if exchange_avg_window_moves else 0
-
-        samples = len(rows)
-
+        # --------------------------
+        # text
+        # --------------------------
         text = (
-            "📈 Market signal calibration\n\n"
-
-            f"samples: {samples}\n"
-            f"period: {time.strftime('%Y-%m-%d %H:%M', time.gmtime(ts_min))}"
-            f" → {time.strftime('%Y-%m-%d %H:%M', time.gmtime(ts_max))}\n\n"
-
-            f"🧠 whale pressure (15m)\n"
-            f"corr: {whale_corr:.3f}\n"
-            f"accuracy: {whale_acc:.1f}%\n"
-            f"avg move: {whale_avg_move:.3f}%\n\n"
-
-            f"📊 exchange flow (1h)\n"
-            f"corr: {exchange_corr:.3f}\n"
-            f"accuracy: {exchange_acc:.1f}%\n\n"
-
-            f"⚡ exchange DELTA (test)\n"
-            f"corr: {exchange_delta_corr:.3f}\n"
-            f"accuracy: {exchange_delta_acc:.1f}%\n\n"
-
-            f"reaction (endpoint): {endpoint_avg:.3f}%\n"
-            f"reaction (max 1h): {max_avg:.3f}%\n"
-            f"reaction (avg 1h): {avg_window:.3f}%"
+            f"📊 Market correlation\n\n"
+            f"samples: {len(rows)}\n"
+            f"signal p90: {sig_p90:.5f}, p95: {sig_p95:.5f}\n"
+            f"cluster p90: {clust_p90:.3f}, p95: {clust_p95:.3f}\n"
+            f"P(up | strong inflow): {p_up:.1f}%\n"
+            f"P(down | strong outflow): {p_down:.1f}%\n"
         )
 
         await callback.message.edit_text(
@@ -448,7 +300,6 @@ async def handle_research_correlation(callback):
 
     except Exception as e:
         logger.exception(e)
-
         await callback.message.edit_text(
             "❌ Ошибка расчета корреляции",
             reply_markup=get_admin_to_main_bt()

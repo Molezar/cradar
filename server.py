@@ -251,16 +251,16 @@ async def exchange_flow_sampler():
             logger.exception("Exchange flow sampler error")
 
         await asyncio.sleep(60)
-
+        
 async def research_market_sampler():
     """
     Сохраняет состояние рынка для последующего анализа корреляции
+    + кластерная концентрация (max / total)
     """
 
     while True:
         try:
             now = int(time.time())
-
             conn = None
             try:
                 conn = get_db()
@@ -269,38 +269,29 @@ async def research_market_sampler():
                 # ---------------------------------
                 # whale pressure (15m)
                 # ---------------------------------
-
                 whale_since = now - 900
-
                 rows = c.execute("""
                     SELECT
                         ef.flow_type,
                         SUM(ef.btc) as total_btc
                     FROM exchange_flow ef
-                    JOIN clusters c
-                        ON ef.cluster_id = c.id
-                    WHERE ef.ts > ?
-                    AND c.cluster_type = 'EXCHANGE'
+                    JOIN clusters c ON ef.cluster_id = c.id
+                    WHERE ef.ts > ? AND c.cluster_type = 'EXCHANGE'
                     GROUP BY ef.flow_type
                 """, (whale_since,)).fetchall()
 
-                inflow = 0
-                outflow = 0
-
+                inflow = outflow = 0
                 for r in rows:
                     if r["flow_type"] == "DEPOSIT":
                         inflow += r["total_btc"] or 0
                     elif r["flow_type"] == "WITHDRAW":
                         outflow += r["total_btc"] or 0
-
                 whale_net = inflow - outflow
 
                 # ---------------------------------
                 # exchange flow (1h)
                 # ---------------------------------
-
                 hour_since = now - 3600
-
                 row = c.execute("""
                     SELECT
                         SUM(CASE WHEN flow_type = 'DEPOSIT' THEN btc ELSE 0 END) as inflow,
@@ -311,42 +302,54 @@ async def research_market_sampler():
 
                 inflow = row["inflow"] or 0
                 outflow = row["outflow"] or 0
-
                 exchange_net = inflow - outflow
+
+                total_flow = inflow + outflow
+                exchange_net_ratio = exchange_net / total_flow if total_flow > 0 else 0
+
+                # ---------------------------------
+                # volatility (1h)
+                # ---------------------------------
+                vol_row = c.execute("""
+                    SELECT MAX(price) as max_p, MIN(price) as min_p
+                    FROM btc_price
+                    WHERE ts > ?
+                """, (hour_since,)).fetchone()
+                volatility = (vol_row["max_p"] - vol_row["min_p"]) / vol_row["min_p"] if vol_row and vol_row["max_p"] and vol_row["min_p"] else 0
+
+                # ---------------------------------
+                # cluster concentration
+                # ---------------------------------
+                cluster_rows = c.execute("""
+                    SELECT cluster_id, SUM(btc) as cluster_btc
+                    FROM exchange_flow
+                    WHERE ts > ?
+                    GROUP BY cluster_id
+                """, (hour_since,)).fetchall()
+
+                total_btc = sum(r["cluster_btc"] or 0 for r in cluster_rows)
+                max_cluster = max(r["cluster_btc"] or 0 for r in cluster_rows) if cluster_rows else 0
+                cluster_concentration = (max_cluster / total_btc) if total_btc > 0 else 0
 
                 # ---------------------------------
                 # current price
                 # ---------------------------------
-
-                price_row = c.execute("""
-                    SELECT price
-                    FROM btc_price
-                    ORDER BY ts DESC
-                    LIMIT 1
-                """).fetchone()
-
+                price_row = c.execute("SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1").fetchone()
                 if not price_row:
                     continue
-
                 price = price_row["price"]
 
                 # ---------------------------------
                 # insert research row
                 # ---------------------------------
-
                 c.execute("""
                     INSERT INTO research_market (
-                        ts,
-                        whale_net,
-                        exchange_net,
-                        price
-                    )
-                    VALUES (?, ?, ?, ?)
+                        ts, whale_net, exchange_net, exchange_net_ratio,
+                        price, volatility, cluster_concentration
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    now,
-                    whale_net,
-                    exchange_net,
-                    price
+                    now, whale_net, exchange_net, exchange_net_ratio,
+                    price, volatility, cluster_concentration
                 ))
 
                 conn.commit()
@@ -358,9 +361,8 @@ async def research_market_sampler():
         except Exception:
             logger.exception("research_market_sampler error")
 
-        # запись каждые 5 минут
         await asyncio.sleep(300)
-        
+
 async def research_market_updater():
     """
     Обновляет price_15m и price_1h когда проходит время
@@ -392,7 +394,7 @@ async def research_market_updater():
                     UPDATE research_market
                     SET price_15m = ?
                     WHERE price_15m IS NULL
-                    AND ts <= ?
+                      AND ts <= ?
                 """, (price, now - 900))
 
                 # update 1h
@@ -400,7 +402,7 @@ async def research_market_updater():
                     UPDATE research_market
                     SET price_1h = ?
                     WHERE price_1h IS NULL
-                    AND ts <= ?
+                      AND ts <= ?
                 """, (price, now - 3600))
 
                 conn.commit()
