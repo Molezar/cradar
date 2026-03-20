@@ -275,9 +275,24 @@ async def handle_research_correlation(callback):
         # --------------------------
         # strong signal stats
         # --------------------------
-        strong_inflow_up = sum(1 for r in rows if r["exchange_net_ratio"] > sig_p90 and (r["price_1h"] - r["price"])/r["price"] > 0)
-        strong_outflow_down = sum(1 for r in rows if r["exchange_net_ratio"] < -sig_p90 and (r["price_1h"] - r["price"])/r["price"] < 0)
-        strong_total = sum(1 for r in rows if abs(r["exchange_net_ratio"] or 0) > sig_p90)
+        def safe_delta(r):
+            if r["price"] is None or r["price_1h"] is None:
+                return None
+            return (r["price_1h"] - r["price"]) / r["price"]
+
+        strong_inflow_up = sum(
+            1 for r in rows
+            if r["exchange_net_ratio"] is not None and r["exchange_net_ratio"] > sig_p90
+               and (delta := safe_delta(r)) is not None and delta > 0
+        )
+
+        strong_outflow_down = sum(
+            1 for r in rows
+            if r["exchange_net_ratio"] is not None and r["exchange_net_ratio"] < -sig_p90
+               and (delta := safe_delta(r)) is not None and delta < 0
+        )
+
+        strong_total = sum(1 for r in rows if r["exchange_net_ratio"] is not None and abs(r["exchange_net_ratio"]) > sig_p90)
         p_up = strong_inflow_up / strong_total*100 if strong_total else 0
         p_down = strong_outflow_down / strong_total*100 if strong_total else 0
 
