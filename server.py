@@ -588,12 +588,12 @@ async def signal_alert_worker():
             """).fetchall()
 
             signals_hist = [(r["exchange_net_ratio"] or 0)*(r["volatility"] or 0) for r in hist_rows]
-            threshold = sorted(abs(s) for s in signals_hist)[int(len(signals_hist)*0.9)] if len(signals_hist) >= 20 else 0.0005
-
+            #threshold = sorted(abs(s) for s in signals_hist)[int(len(signals_hist)*0.9)] if len(signals_hist) >= 20 else 0.0005
+            threshold = 0
             # --------------------------
             # 4. Delta (усиление сигнала)
             # --------------------------
-            prev_ratio = hist_rows[-1]["exchange_net_ratio"] if hist_rows else 0
+            prev_ratio = hist_rows[-1]["exchange_net_ratio"] if len(hist_rows) > 0 else 0
             exchange_delta = exchange_ratio - prev_ratio
             delta_values = [abs((hist_rows[i]["exchange_net_ratio"] or 0) - (hist_rows[i-1]["exchange_net_ratio"] or 0))
                             for i in range(1, len(hist_rows))]
@@ -657,11 +657,26 @@ async def signal_alert_worker():
             # --------------------------
             # 9. Decide signal
             # --------------------------
+            logger.info(
+                f"[DEBUG SIGNAL] "
+                f"signal={signal:.6f} | threshold={threshold:.6f} | "
+                f"ratio={exchange_ratio:.4f} | vol={volatility:.4f} | "
+                f"delta={exchange_delta:.4f}/{p95_delta:.4f} | "
+                f"cluster={cluster_concentration:.3f} | "
+                f"hist={len(hist_rows)}"
+            )
             if abs(signal) >= threshold:
+                logger.info(f"[DEBUG PASS THRESHOLD] signal passed threshold")
                 direction = "SELL" if signal > 0 else "BUY"
                 probability = p_down if direction == "SELL" else p_up
-
-                if probability < 0.0001:  # минимальная вероятность для надежного сигнала
+                
+                logger.info(
+                    f"[DEBUG PROB] dir={direction} | "
+                    f"p_up={p_up:.2f} | p_down={p_down:.2f} | "
+                    f"chosen={probability:.2f}"
+                )
+                if False: 
+                #if probability < 0.0001:  # минимальная вероятность для надежного сигнала
                     logger.info(f"⚪ Ignored {direction} signal | P={probability:.1f}% < 60%")
                 else:
                     msg_text = (
