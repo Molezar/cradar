@@ -281,7 +281,58 @@ async def netflow_alert_monitor():
             logger.exception(f"Error in netflow_alert_monitor: {e}")
 
         await asyncio.sleep(NET_ALERT_INTERVAL)
+
+async def signal_listener():
+    last_id = 0
+
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(API + "/alerts/signals") as resp:
+                    data = await resp.json()
+
+                    for s in data:
+                        if s["id"] <= last_id:
+                            continue
+
+                        last_id = s["id"]
+
+                        msg = f"🚨 SIGNAL {s['direction']}\nSignal: {s['signal']:.6f}"
+
+                        for cid in subscribers:
+                            await bot.send_message(cid, msg)
+
+        except Exception:
+            logger.exception("signal_listener")
+
+        await asyncio.sleep(30)        
         
+async def entry_listener():
+    last_id = 0
+
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(API + "/alerts/entries") as resp:
+                    data = await resp.json()
+
+                    for s in data:
+                        if s["id"] <= last_id:
+                            continue
+
+                        last_id = s["id"]
+
+                        msg = f"✅ ENTRY {s['direction']}"
+
+                        for cid in subscribers:
+                            await bot.send_message(cid, msg)
+
+        except Exception:
+            logger.exception("entry_listener")
+
+        await asyncio.sleep(30)
+
+
 # ==============================================
 # Trade Monitor
 # ==============================================
@@ -518,6 +569,8 @@ async def check_candles_api(session: aiohttp.ClientSession = None):
 # ==============================================
 async def main():
     listener_task = asyncio.create_task(whale_listener())
+    signal_task = asyncio.create_task(signal_listener())
+    entry_task = asyncio.create_task(entry_listener())
     heartbeat_task = asyncio.create_task(bot_heartbeat())
     monitor_task = asyncio.create_task(trade_monitor())
     netflow_task = asyncio.create_task(netflow_alert_monitor())   # <-- добавить
@@ -528,9 +581,17 @@ async def main():
         await dp.start_polling(bot)
     finally:
         listener_task.cancel()
-        netflow_task.cancel()   # и здесь отменить
+        signal_task.cancel()
+        entry_task.cancel()
+        heartbeat_task.cancel()
+        monitor_task.cancel()
+        netflow_task.cancel()
         try:
             await listener_task
+            await signal_task
+            await entry_task
+            await heartbeat_task
+            await monitor_task
             await netflow_task
         except asyncio.CancelledError:
             pass

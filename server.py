@@ -487,9 +487,9 @@ async def trainer():
         await asyncio.sleep(300)
 
 
-# ==============================================
+# =============================================
 # BEHAVIORAL → EXCHANGE UPGRADE WORKER
-# ==============================================
+# =============================================
 
 async def behavioral_upgrade_worker():
 
@@ -530,9 +530,194 @@ async def behavioral_upgrade_worker():
 
         await asyncio.sleep(300)  # каждые 5 минут
 
-# ==============================================
+
+# =============================================
+# SIGNAL WORKERS
+# =============================================
+
+async def signal_alert_worker():
+    """
+    Генерирует сигнал (опережающий)
+    """
+    while True:
+        try:
+            now = int(time.time())
+            hour_ago = now - 3600
+
+            conn = get_db()
+            c = conn.cursor()
+
+            # ---- FLOW ----
+            row = c.execute("""
+                SELECT 
+                    SUM(CASE WHEN flow_type='DEPOSIT' THEN btc ELSE 0 END) as inflow,
+                    SUM(CASE WHEN flow_type='WITHDRAW' THEN btc ELSE 0 END) as outflow
+                FROM exchange_flow
+                WHERE ts > ?
+            """, (hour_ago,)).fetchone()
+
+            inflow = row["inflow"] or 0
+            outflow = row["outflow"] or 0
+
+            net = inflow - outflow
+            total = inflow + outflow
+            ratio = net / total if total > 0 else 0
+
+            # ---- VOL ----
+            vol_row = c.execute("""
+                SELECT MAX(price) as max_p, MIN(price) as min_p
+                FROM btc_price
+                WHERE ts > ?
+            """, (hour_ago,)).fetchone()
+
+            volatility = (vol_row["max_p"] - vol_row["min_p"]) / vol_row["min_p"] if vol_row else 0
+
+            signal = ratio * volatility
+
+            # ---- threshold ----
+            hist = c.execute("""
+                SELECT exchange_net_ratio, volatility
+                FROM research_market
+            """).fetchall()
+
+            signals = [(r["exchange_net_ratio"] or 0)*(r["volatility"] or 0) for r in hist]
+
+            if len(signals) < 50:
+                await asyncio.sleep(60)
+                continue
+
+            threshold = sorted(abs(s) for s in signals)[int(len(signals)*0.95)]
+
+            # ---- SIGNAL ----
+            if abs(signal) > threshold:
+
+                direction = "SELL" if signal > 0 else "BUY"
+
+                c.execute("""
+                    INSERT INTO signal_events (ts, direction, signal, threshold, status)
+                    VALUES (?, ?, ?, ?, 'WAITING')
+                """, (now, direction, signal, threshold))
+
+                conn.commit()
+
+                logger.info(f"🚨 SIGNAL: {direction} | {signal:.6f}")
+
+            conn.close()
+
+        except Exception:
+            logger.exception("signal_alert_worker error")
+
+        await asyncio.sleep(60)
+        
+async def entry_alert_worker():
+    """
+    Ждёт подтверждение цены
+    """
+    while True:
+        try:
+            now = int(time.time())
+
+            conn = get_db()
+            c = conn.cursor()
+
+            # берём незакрытые сигналы
+            rows = c.execute("""
+                SELECT * FROM signal_events
+                WHERE status='WAITING'
+                AND ts > ?
+            """, (now - 3600,)).fetchall()
+
+            if not rows:
+                conn.close()
+                await asyncio.sleep(30)
+                continue
+
+            # текущая цена
+            price_row = c.execute("""
+                SELECT price FROM btc_price
+                ORDER BY ts DESC LIMIT 1
+            """).fetchone()
+
+            if not price_row:
+                conn.close()
+                await asyncio.sleep(30)
+                continue
+
+            current_price = price_row["price"]
+
+            for r in rows:
+                signal_id = r["id"]
+                direction = r["direction"]
+                signal_ts = r["ts"]
+
+                # цена в момент сигнала
+                start_row = c.execute("""
+                    SELECT price FROM btc_price
+                    WHERE ts >= ?
+                    ORDER BY ts ASC LIMIT 1
+                """, (signal_ts,)).fetchone()
+
+                if not start_row:
+                    continue
+
+                start_price = start_row["price"]
+
+                delta = (current_price - start_price) / start_price
+
+                # ---- УСЛОВИЕ ВХОДА ----
+                if direction == "SELL" and delta < -0.001:
+                    trigger = True
+                elif direction == "BUY" and delta > 0.001:
+                    trigger = True
+                else:
+                    trigger = False
+
+                if trigger:
+                    c.execute("""
+                        UPDATE signal_events
+                        SET status='TRIGGERED', triggered_ts=?
+                        WHERE id=?
+                    """, (now, signal_id))
+
+                    conn.commit()
+
+                    logger.info(f"✅ ENTRY: {direction} | delta={delta:.4f}")
+
+            conn.close()
+
+        except Exception:
+            logger.exception("entry_alert_worker error")
+
+        await asyncio.sleep(30)
+        
+
+# =============================================
 # API
-# ==============================================
+# =============================================
+
+@app.route("/alerts/signals")
+def get_signals():
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT * FROM signal_events
+        ORDER BY ts DESC LIMIT 50
+    """).fetchall()
+    conn.close()
+
+    return jsonify([dict(r) for r in rows])
+    
+@app.route("/alerts/entries")
+def get_entries():
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT * FROM signal_events
+        WHERE status='TRIGGERED'
+        ORDER BY triggered_ts DESC LIMIT 50
+    """).fetchall()
+    conn.close()
+
+    return jsonify([dict(r) for r in rows])
+
 
 @app.route("/whales")
 def whales():
@@ -929,6 +1114,8 @@ def start_async_tasks_loop():
     loop.create_task(trainer())
     loop.create_task(mempool_ws_worker())
     loop.create_task(behavioral_upgrade_worker())
+    loop.create_task(signal_alert_worker())
+    loop.create_task(entry_alert_worker())
     loop.run_forever()
 
 
