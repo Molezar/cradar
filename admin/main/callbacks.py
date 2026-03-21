@@ -51,24 +51,33 @@ async def handle_download_migrations_log(callback):
     Отправка лога миграций через телеграм.
     """
     try:
-        path = "migrations.log"
+        # выбираем правильный файл по ENV
+        if Config.ENV == "PROD":
+            path = "/data/prod_applied_migrations.txt"
+        elif Config.ENV == "STAG":
+            path = "/data/stag_applied_migrations.txt"
+        else:
+            path = "applied_migrations.txt"  # локально
+
         if not os.path.exists(path):
             await callback.message.edit_text(
-                "⚠️ Лог не найден",
+                f"⚠️ Лог не найден: {path}",
                 reply_markup=get_admin_to_main_bt()
             )
             return
 
         ts = datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%Y-%m-%d_%H-%M-%S")
+
         await callback.bot.send_document(
             chat_id=callback.from_user.id,
-            document=FSInputFile(path, filename=f"migrations_{ts}.log")
+            document=FSInputFile(path, filename=f"{Config.ENV.lower()}_migrations_{ts}.txt"),
+            caption=f"📄 Лог миграций ({Config.ENV})"
         )
 
     except Exception as e:
         logger.exception(f"Ошибка при отправке лога миграций: {e}")
         await callback.message.edit_text(
-            "❌ Ошибка",
+            f"❌ Ошибка: {e}",
             reply_markup=get_admin_to_main_bt()
         )
 

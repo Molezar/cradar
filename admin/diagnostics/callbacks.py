@@ -11,7 +11,7 @@ logger = get_logger(__name__)
 
 async def handle_tables_info(callback):
     """
-    Показывает количество записей в каждой таблице БД
+    Показывает количество записей и список колонок в каждой таблице БД
     """
     try:
         conn = get_db()
@@ -31,15 +31,32 @@ async def handle_tables_info(callback):
 
         for table in tables:
             try:
+                # количество записей
                 cursor.execute(f"SELECT COUNT(*) FROM {table}")
                 count = cursor.fetchone()[0]
-                lines.append(f"{table}: {count}")
-            except Exception:
-                lines.append(f"{table}: error")
+
+                # колонки (PRAGMA)
+                cursor.execute(f"PRAGMA table_info({table})")
+                cols = cursor.fetchall()
+
+                # форматируем: name(type)
+                col_names = []
+                for col in cols:
+                    name = col[1]
+                    col_type = col[2]
+                    col_names.append(f"{name}({col_type})")
+
+                cols_str = ", ".join(col_names)
+
+                lines.append(f"📄 {table} ({count})\n   └ {cols_str}")
+
+            except Exception as e:
+                logger.exception(f"Ошибка таблицы {table}: {e}")
+                lines.append(f"📄 {table}: error")
 
         conn.close()
 
-        text = "📊 Таблицы БД:\n\n" + "\n".join(lines)
+        text = "📊 Таблицы БД:\n\n" + "\n\n".join(lines)
 
         if len(text) > 3500:
             text = text[:3500] + "\n..."
