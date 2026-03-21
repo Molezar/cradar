@@ -46,7 +46,7 @@ async def handle_download_db(callback):
             reply_markup=get_admin_to_main_bt()
         )
 
-async def handle_download_migrations_log(callback):
+async def temphandle_download_migrations_log(callback):
     """
     Отправка лога миграций через телеграм.
     """
@@ -81,6 +81,55 @@ async def handle_download_migrations_log(callback):
             reply_markup=get_admin_to_main_bt()
         )
 
+async def handle_download_migrations_log(callback):
+    """
+    Ручное добавление миграции 006 в лог (если по какой-то причине не записалась)
+    """
+
+    try:
+        migration_name = "006_alter_signal_events_add_fields.sql"
+
+        # путь к логу такой же как в migration runner
+        if Config.ENV == "PROD":
+            log_path = "/data/prod_applied_migrations.txt"
+        elif Config.ENV == "STAG":
+            log_path = "/data/stag_applied_migrations.txt"
+        else:
+            log_path = "database/applied_migrations.txt"
+
+        # если файла нет — создаём
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        if not os.path.exists(log_path):
+            open(log_path, "w").close()
+
+        # читаем текущие миграции
+        with open(log_path, "r") as f:
+            applied = set(line.strip() for line in f)
+
+        # если уже есть — ничего не делаем
+        if migration_name in applied:
+            await callback.message.edit_text(
+                f"ℹ️ Миграция уже в логе:\n{migration_name}",
+                reply_markup=get_admin_to_main_bt()
+            )
+            return
+
+        # добавляем
+        with open(log_path, "a") as f:
+            f.write(migration_name + "\n")
+
+        await callback.message.edit_text(
+            f"✅ Добавлено в лог миграций:\n{migration_name}",
+            reply_markup=get_admin_to_main_bt()
+        )
+
+    except Exception as e:
+        logger.exception(f"Ошибка при добавлении миграции 006: {e}")
+        await callback.message.edit_text(
+            "❌ Ошибка при обновлении лога миграций",
+            reply_markup=get_admin_to_main_bt()
+        )
+        
 async def handle_view_volume(callback):
     """
     Просмотр структуры каталога /data.

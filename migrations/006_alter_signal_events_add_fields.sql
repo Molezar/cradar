@@ -6,4 +6,3 @@ ALTER TABLE signal_events ADD COLUMN cluster_concentration REAL;
 ALTER TABLE signal_events ADD COLUMN price_change REAL;
 ALTER TABLE signal_events ADD COLUMN p_up REAL;
 ALTER TABLE signal_events ADD COLUMN p_down REAL;
-ALTER TABLE signal_events ADD COLUMN triggered_ts INTEGER;
