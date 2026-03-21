@@ -294,18 +294,39 @@ async def signal_listener():
                     for s in data:
                         if s["id"] <= last_id:
                             continue
-
                         last_id = s["id"]
 
-                        msg = f"🚨 SIGNAL {s['direction']}\nSignal: {s['signal']:.6f}"
+                        # Финальная вероятность (выбираем вероятность в сторону сигнала)
+                        probability = s["p_down"] if s["direction"] == "SELL" else s["p_up"]
 
+                        # Формируем сообщение с полной аналитикой
+                        msg_lines = [
+                            f"🚨 SIGNAL {s['direction']}",
+                            f"Signal: {s['signal']:.6f}",
+                            f"Threshold: {s.get('threshold', 0):.6f}",
+                            f"Exchange ratio: {s.get('exchange_ratio', 0):.4f}",
+                            f"Volatility: {s.get('volatility', 0):.4f}",
+                            f"Cluster concentration: {s.get('cluster_concentration', 0):.3f}",
+                        ]
+
+                        if s.get("delta_note"):
+                            msg_lines.append(f"{s['delta_note']}")
+
+                        if s.get("price_change") is not None:
+                            msg_lines.append(f"BTC price change: {s['price_change']:.2f}%")
+
+                        msg_lines.append(f"Estimated probability of success: {probability:.1f}%")
+
+                        msg = "\n".join(msg_lines)
+
+                        # Отправляем подписчикам
                         for cid in subscribers:
                             await bot.send_message(cid, msg)
 
         except Exception:
-            logger.exception("signal_listener")
+            logger.exception("signal_listener error")
 
-        await asyncio.sleep(30)        
+        await asyncio.sleep(30)
         
 async def entry_listener():
     last_id = 0

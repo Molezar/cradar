@@ -537,7 +537,9 @@ async def behavioral_upgrade_worker():
 
 async def signal_alert_worker():
     """
-    Генерирует сигнал (опережающий)
+    Генерирует сигнал (опережающий) с учетом динамических порогов,
+    кластера, DELTA и вероятностей исторических сильных сигналов.
+    Сохраняет все данные в таблицу signal_events.
     """
     while True:
         try:
@@ -547,60 +549,148 @@ async def signal_alert_worker():
             conn = get_db()
             c = conn.cursor()
 
-            # ---- FLOW ----
+            # --------------------------
+            # 1. Exchange flows (last 1h)
+            # --------------------------
             row = c.execute("""
-                SELECT 
-                    SUM(CASE WHEN flow_type='DEPOSIT' THEN btc ELSE 0 END) as inflow,
-                    SUM(CASE WHEN flow_type='WITHDRAW' THEN btc ELSE 0 END) as outflow
+                SELECT SUM(CASE WHEN flow_type='DEPOSIT' THEN btc ELSE 0 END) as inflow,
+                       SUM(CASE WHEN flow_type='WITHDRAW' THEN btc ELSE 0 END) as outflow,
+                       SUM(CASE WHEN flow_type='INTERNAL' THEN btc ELSE 0 END) as internal
                 FROM exchange_flow
                 WHERE ts > ?
             """, (hour_ago,)).fetchone()
 
             inflow = row["inflow"] or 0
             outflow = row["outflow"] or 0
+            internal = row["internal"] or 0
 
             net = inflow - outflow
-            total = inflow + outflow
-            ratio = net / total if total > 0 else 0
+            total_flow = inflow + outflow
+            exchange_ratio = net / total_flow if total_flow > 0 else 0
 
-            # ---- VOL ----
+            # --------------------------
+            # 2. Volatility
+            # --------------------------
             vol_row = c.execute("""
                 SELECT MAX(price) as max_p, MIN(price) as min_p
                 FROM btc_price
                 WHERE ts > ?
             """, (hour_ago,)).fetchone()
+            volatility = (vol_row["max_p"] - vol_row["min_p"]) / vol_row["min_p"] if vol_row and vol_row["max_p"] and vol_row["min_p"] else 0
 
-            volatility = (vol_row["max_p"] - vol_row["min_p"]) / vol_row["min_p"] if vol_row else 0
-
-            signal = ratio * volatility
-
-            # ---- threshold ----
-            hist = c.execute("""
-                SELECT exchange_net_ratio, volatility
+            # --------------------------
+            # 3. Historical signals for threshold
+            # --------------------------
+            hist_rows = c.execute("""
+                SELECT exchange_net_ratio, volatility, price, price_1h, cluster_concentration
                 FROM research_market
+                WHERE exchange_net_ratio IS NOT NULL AND volatility IS NOT NULL
             """).fetchall()
 
-            signals = [(r["exchange_net_ratio"] or 0)*(r["volatility"] or 0) for r in hist]
+            signals_hist = [(r["exchange_net_ratio"] or 0)*(r["volatility"] or 0) for r in hist_rows]
+            threshold = sorted(abs(s) for s in signals_hist)[int(len(signals_hist)*0.9)] if len(signals_hist) >= 20 else 0.0005
 
-            if len(signals) < 50:
-                await asyncio.sleep(60)
-                continue
+            # --------------------------
+            # 4. Delta (усиление сигнала)
+            # --------------------------
+            prev_ratio = hist_rows[-1]["exchange_net_ratio"] if hist_rows else 0
+            exchange_delta = exchange_ratio - prev_ratio
+            delta_values = [abs((hist_rows[i]["exchange_net_ratio"] or 0) - (hist_rows[i-1]["exchange_net_ratio"] or 0))
+                            for i in range(1, len(hist_rows))]
+            p95_delta = sorted(delta_values)[int(len(delta_values)*0.95)] if delta_values else 0.01
 
-            threshold = sorted(abs(s) for s in signals)[int(len(signals)*0.95)]
+            # --------------------------
+            # 5. Cluster concentration
+            # --------------------------
+            cluster_rows = c.execute("""
+                SELECT cluster_id, SUM(btc) as cluster_btc
+                FROM exchange_flow
+                WHERE ts > ?
+                GROUP BY cluster_id
+            """, (hour_ago,)).fetchall()
+            total_btc = sum(r["cluster_btc"] or 0 for r in cluster_rows)
+            max_cluster = max(r["cluster_btc"] or 0 for r in cluster_rows) if cluster_rows else 0
+            cluster_concentration = (max_cluster / total_btc) if total_btc > 0 else 0
 
-            # ---- SIGNAL ----
-            if abs(signal) > threshold:
+            # --------------------------
+            # 6. Signal
+            # --------------------------
+            signal = exchange_ratio * volatility
+            delta_note = ""
+            if abs(exchange_delta) > p95_delta:
+                signal *= 1.5
+                delta_note = f"⚡ DELTA surge! ({exchange_delta:.4f} > {p95_delta:.4f}) → signal x1.5"
 
+            # --------------------------
+            # 7. Probability P(up/down) based on historical strong signals
+            # --------------------------
+            def safe_delta(r):
+                if r["price"] is None or r["price_1h"] is None:
+                    return None
+                return (r["price_1h"] - r["price"]) / r["price"]
+
+            sig_p90 = sorted(abs(s) for s in signals_hist)[int(len(signals_hist)*0.9)] if signals_hist else 0.001
+
+            strong_inflow_up = sum(
+                1 for r in hist_rows
+                if (r["exchange_net_ratio"] or 0) > sig_p90
+                and (delta := safe_delta(r)) is not None
+                and delta > 0
+            )
+            strong_outflow_down = sum(
+                1 for r in hist_rows
+                if (r["exchange_net_ratio"] or 0) < -sig_p90
+                and (delta := safe_delta(r)) is not None
+                and delta < 0
+            )
+            strong_total = sum(1 for r in hist_rows if r["exchange_net_ratio"] is not None and abs(r["exchange_net_ratio"]) > sig_p90)
+            p_up = strong_inflow_up / strong_total*100 if strong_total else 0
+            p_down = strong_outflow_down / strong_total*100 if strong_total else 0
+
+            # --------------------------
+            # 8. BTC price change
+            # --------------------------
+            start_row = c.execute("SELECT price FROM btc_price WHERE ts >= ? ORDER BY ts ASC LIMIT 1", (hour_ago,)).fetchone()
+            end_row = c.execute("SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1").fetchone()
+            price_change = (end_row["price"] - start_row["price"]) / start_row["price"] * 100 if start_row and end_row and start_row["price"] else None
+
+            # --------------------------
+            # 9. Decide signal
+            # --------------------------
+            if abs(signal) >= threshold:
                 direction = "SELL" if signal > 0 else "BUY"
+                probability = p_down if direction == "SELL" else p_up
 
-                c.execute("""
-                    INSERT INTO signal_events (ts, direction, signal, threshold, status)
-                    VALUES (?, ?, ?, ?, 'WAITING')
-                """, (now, direction, signal, threshold))
+                if probability < 60:  # минимальная вероятность для надежного сигнала
+                    logger.info(f"⚪ Ignored {direction} signal | P={probability:.1f}% < 60%")
+                else:
+                    msg_text = (
+                        f"🚨 SIGNAL {direction}\n"
+                        f"Signal: {signal:.6f}\n"
+                        f"Exchange ratio: {exchange_ratio:.4f}\n"
+                        f"Volatility: {volatility:.4f}\n"
+                        f"Threshold (p90): {threshold:.6f}\n"
+                        f"Cluster concentration: {cluster_concentration:.3f}\n"
+                        f"{delta_note}\n"
+                        f"BTC price change last 1h: {price_change:.2f}%\n"
+                        f"Estimated probability of success: {probability:.1f}%"
+                    )
 
-                conn.commit()
+                    c.execute("""
+                        INSERT INTO signal_events (
+                            ts, direction, signal, threshold, status,
+                            exchange_ratio, volatility, delta_note,
+                            cluster_concentration, price_change, p_up, p_down
+                        )
+                        VALUES (?, ?, ?, ?, 'WAITING', ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        now, direction, signal, threshold,
+                        exchange_ratio, volatility, delta_note,
+                        cluster_concentration, price_change, p_up, p_down
+                    ))
+                    conn.commit()
 
-                logger.info(f"🚨 SIGNAL: {direction} | {signal:.6f}")
+                    logger.info(msg_text)
 
             conn.close()
 
