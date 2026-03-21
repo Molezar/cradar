@@ -297,23 +297,34 @@ async def signal_listener():
                         last_id = s["id"]
 
                         # Финальная вероятность (выбираем вероятность в сторону сигнала)
-                        probability = s["p_down"] if s["direction"] == "SELL" else s["p_up"]
+                        p_up = float(s.get("p_up") or 0)
+                        p_down = float(s.get("p_down") or 0)
+                        probability = p_down if s["direction"] == "SELL" else p_up
+
+                        # Приводим остальные значения к float, если None ставим 0
+                        signal_val = float(s.get("signal") or 0)
+                        threshold = float(s.get("threshold") or 0)
+                        exchange_ratio = float(s.get("exchange_ratio") or 0)
+                        volatility = float(s.get("volatility") or 0)
+                        cluster_concentration = float(s.get("cluster_concentration") or 0)
+                        price_change = s.get("price_change")
+                        price_change_val = float(price_change) if price_change is not None else None
 
                         # Формируем сообщение с полной аналитикой
                         msg_lines = [
                             f"🚨 SIGNAL {s['direction']}",
-                            f"Signal: {s['signal']:.6f}",
-                            f"Threshold: {s.get('threshold', 0):.6f}",
-                            f"Exchange ratio: {s.get('exchange_ratio', 0):.4f}",
-                            f"Volatility: {s.get('volatility', 0):.4f}",
-                            f"Cluster concentration: {s.get('cluster_concentration', 0):.3f}",
+                            f"Signal: {signal_val:.6f}",
+                            f"Threshold: {threshold:.6f}",
+                            f"Exchange ratio: {exchange_ratio:.4f}",
+                            f"Volatility: {volatility:.4f}",
+                            f"Cluster concentration: {cluster_concentration:.3f}",
                         ]
 
                         if s.get("delta_note"):
                             msg_lines.append(f"{s['delta_note']}")
 
-                        if s.get("price_change") is not None:
-                            msg_lines.append(f"BTC price change: {s['price_change']:.2f}%")
+                        if price_change_val is not None:
+                            msg_lines.append(f"BTC price change: {price_change_val:.2f}%")
 
                         msg_lines.append(f"Estimated probability of success: {probability:.1f}%")
 
