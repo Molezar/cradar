@@ -289,56 +289,51 @@ async def signal_listener():
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(API + "/alerts/signals") as resp:
-                    data = await resp.json()
+                    s = await resp.json()
+                    if not s or s.get("id", 0) <= last_id:
+                        await asyncio.sleep(30)
+                        continue
 
-                    for s in data:
-                        if s["id"] <= last_id:
-                            continue
-                        last_id = s["id"]
+                    last_id = s["id"]
 
-                        # Финальная вероятность (выбираем вероятность в сторону сигнала)
-                        p_up = float(s.get("p_up") or 0)
-                        p_down = float(s.get("p_down") or 0)
-                        probability = p_down if s["direction"] == "SELL" else p_up
+                    p_up = float(s.get("p_up") or 0)
+                    p_down = float(s.get("p_down") or 0)
+                    probability = p_down if s["direction"] == "SELL" else p_up
 
-                        # Приводим остальные значения к float, если None ставим 0
-                        signal_val = float(s.get("signal") or 0)
-                        threshold = float(s.get("threshold") or 0)
-                        exchange_ratio = float(s.get("exchange_ratio") or 0)
-                        volatility = float(s.get("volatility") or 0)
-                        cluster_concentration = float(s.get("cluster_concentration") or 0)
-                        price_change = s.get("price_change")
-                        price_change_val = float(price_change) if price_change is not None else None
+                    signal_val = float(s.get("signal") or 0)
+                    threshold = float(s.get("threshold") or 0)
+                    exchange_ratio = float(s.get("exchange_ratio") or 0)
+                    volatility = float(s.get("volatility") or 0)
+                    cluster_concentration = float(s.get("cluster_concentration") or 0)
+                    price_change = s.get("price_change")
+                    price_change_val = float(price_change) if price_change is not None else None
 
-                        # Формируем сообщение с полной аналитикой
-                        msg_lines = [
-                            f"🚨 SIGNAL {s['direction']}",
-                            f"Signal: {signal_val:.6f}",
-                            f"Threshold: {threshold:.6f}",
-                            f"Exchange ratio: {exchange_ratio:.4f}",
-                            f"Volatility: {volatility:.4f}",
-                            f"Cluster concentration: {cluster_concentration:.3f}",
-                        ]
+                    msg_lines = [
+                        f"🚨 SIGNAL {s['direction']}",
+                        f"Signal: {signal_val:.6f}",
+                        f"Threshold: {threshold:.6f}",
+                        f"Exchange ratio: {exchange_ratio:.4f}",
+                        f"Volatility: {volatility:.4f}",
+                        f"Cluster concentration: {cluster_concentration:.3f}",
+                    ]
 
-                        if s.get("delta_note"):
-                            msg_lines.append(f"{s['delta_note']}")
+                    if s.get("delta_note"):
+                        msg_lines.append(f"{s['delta_note']}")
+                    if price_change_val is not None:
+                        msg_lines.append(f"BTC price change: {price_change_val:.2f}%")
 
-                        if price_change_val is not None:
-                            msg_lines.append(f"BTC price change: {price_change_val:.2f}%")
+                    msg_lines.append(f"Estimated probability of success: {probability:.1f}%")
 
-                        msg_lines.append(f"Estimated probability of success: {probability:.1f}%")
+                    msg = "\n".join(msg_lines)
 
-                        msg = "\n".join(msg_lines)
-
-                        # Отправляем подписчикам
-                        for cid in subscribers:
-                            await bot.send_message(cid, msg)
+                    for cid in subscribers:
+                        await bot.send_message(cid, msg)
 
         except Exception:
             logger.exception("signal_listener error")
 
         await asyncio.sleep(30)
-        
+
 async def entry_listener():
     last_id = 0
 
@@ -346,18 +341,18 @@ async def entry_listener():
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(API + "/alerts/entries") as resp:
-                    data = await resp.json()
+                    s = await resp.json()  # теперь возвращается один сигнал
 
-                    for s in data:
-                        if s["id"] <= last_id:
-                            continue
+                    if not s or s.get("id", 0) <= last_id:
+                        await asyncio.sleep(30)
+                        continue
 
-                        last_id = s["id"]
+                    last_id = s["id"]
 
-                        msg = f"✅ ENTRY {s['direction']}"
+                    msg = f"✅ ENTRY {s['direction']}"
 
-                        for cid in subscribers:
-                            await bot.send_message(cid, msg)
+                    for cid in subscribers:
+                        await bot.send_message(cid, msg)
 
         except Exception:
             logger.exception("entry_listener")

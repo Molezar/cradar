@@ -661,7 +661,7 @@ async def signal_alert_worker():
                 direction = "SELL" if signal > 0 else "BUY"
                 probability = p_down if direction == "SELL" else p_up
 
-                if probability < 60:  # минимальная вероятность для надежного сигнала
+                if probability < 0.0001:  # минимальная вероятность для надежного сигнала
                     logger.info(f"⚪ Ignored {direction} signal | P={probability:.1f}% < 60%")
                 else:
                     msg_text = (
@@ -755,9 +755,9 @@ async def entry_alert_worker():
                 delta = (current_price - start_price) / start_price
 
                 # ---- УСЛОВИЕ ВХОДА ----
-                if direction == "SELL" and delta < -0.001:
+                if direction == "SELL" and delta < 0:
                     trigger = True
-                elif direction == "BUY" and delta > 0.001:
+                elif direction == "BUY" and delta > 0:
                     trigger = True
                 else:
                     trigger = False
@@ -788,25 +788,29 @@ async def entry_alert_worker():
 @app.route("/alerts/signals")
 def get_signals():
     conn = get_db()
-    rows = conn.execute("""
+    row = conn.execute("""
         SELECT * FROM signal_events
-        ORDER BY ts DESC LIMIT 50
-    """).fetchall()
+        ORDER BY ts DESC LIMIT 1
+    """).fetchone()
     conn.close()
 
-    return jsonify([dict(r) for r in rows])
-    
+    if row:
+        return jsonify(dict(row))
+    return jsonify({})
+
 @app.route("/alerts/entries")
 def get_entries():
     conn = get_db()
-    rows = conn.execute("""
+    row = conn.execute("""
         SELECT * FROM signal_events
         WHERE status='TRIGGERED'
-        ORDER BY triggered_ts DESC LIMIT 50
-    """).fetchall()
+        ORDER BY triggered_ts DESC LIMIT 1
+    """).fetchone()
     conn.close()
 
-    return jsonify([dict(r) for r in rows])
+    if row:
+        return jsonify(dict(row))
+    return jsonify({})
 
 
 @app.route("/whales")
