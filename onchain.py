@@ -102,7 +102,7 @@ def create_behavioral_cluster(address, cursor, cache=None):
     if cache is not None:
         cache[address] = (cluster_id, 0.4)
 
-    return cluster_ids
+    return cluster_id
 
 
 # ==============================================
