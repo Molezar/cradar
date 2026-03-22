@@ -1,4 +1,3 @@
-# cluster_engine.py
 import time
 from collections import defaultdict
 
@@ -12,6 +11,19 @@ LOOKBACK_DAYS = 30
 FINGERPRINT_THRESHOLD = 5
 BATCH_SIZE = 5000
 BATCH_SLEEP = 0.02
+SQL_BATCH_SIZE = 900  # 🔥 важно для SQLite
+
+
+# ✅ универсальный батчевый SELECT
+def batched_select(cursor, base_query, items):
+    results = []
+    for i in range(0, len(items), SQL_BATCH_SIZE):
+        batch = items[i:i + SQL_BATCH_SIZE]
+        placeholders = ",".join("?" * len(batch))
+        query = base_query.format(placeholders=placeholders)
+        rows = cursor.execute(query, batch).fetchall()
+        results.extend(rows)
+    return results
 
 
 def get_exchange_clusters(cursor):
@@ -69,7 +81,6 @@ def insert_or_update_address(cursor, cache, addr, cluster_id, confidence, now):
         """, (addr,)).fetchone()
         if existing:
             existing = dict(existing)
-            existing["confidence"] = existing.get("confidence", confidence)
         else:
             existing = None
         cache[addr] = existing
@@ -105,7 +116,6 @@ def batch_process_addresses(addresses, cursor, cache, cluster_id, confidence, no
         for addr in batch:
             if insert_or_update_address(cursor, cache, addr, cluster_id, confidence, now):
                 learned += 1
-        # sleep только если текущая пачка полная
         if len(batch) == BATCH_SIZE:
             time.sleep(BATCH_SLEEP)
     return learned
@@ -115,20 +125,11 @@ def detect_change_addresses(cursor, txids, cluster_id, now, cache):
     if not txids:
         return 0
 
-    BATCH_SIZE = 900  # безопасно < 999
-    rows = []
-
-    for i in range(0, len(txids), BATCH_SIZE):
-        batch = txids[i:i + BATCH_SIZE]
-        placeholders = ",".join("?" * len(batch))
-
-        batch_rows = cursor.execute(f"""
-            SELECT o.txid, o.address, o.btc
-            FROM tx_outputs o
-            WHERE o.txid IN ({placeholders})
-        """, batch).fetchall()
-
-        rows.extend(batch_rows)
+    rows = batched_select(cursor, """
+        SELECT o.txid, o.address, o.btc
+        FROM tx_outputs o
+        WHERE o.txid IN ({placeholders})
+    """, txids)
 
     tx_outputs = defaultdict(list)
     for r in rows:
@@ -154,12 +155,11 @@ def detect_multi_input_exchange(cursor, txids, cluster_id, now, cache):
     if not txids:
         return 0
 
-    placeholders = ",".join("?" * len(txids))
-    rows = cursor.execute(f"""
+    rows = batched_select(cursor, """
         SELECT txid, address
         FROM tx_inputs
         WHERE txid IN ({placeholders})
-    """, txids).fetchall()
+    """, txids)
 
     tx_inputs = defaultdict(list)
     for r in rows:
@@ -169,26 +169,32 @@ def detect_multi_input_exchange(cursor, txids, cluster_id, now, cache):
     for addresses in tx_inputs.values():
         if len(addresses) < 2:
             continue
-        # хотя бы один адрес уже в кластере
+
         has_in_cluster = False
         for a in addresses:
             cached = cache.get(a)
-            cached_cluster = cached["cluster_id"] if cached else None
-            if cached_cluster == cluster_id:
+            if cached and cached["cluster_id"] == cluster_id:
                 has_in_cluster = True
                 break
-            row = cursor.execute("SELECT cluster_id FROM cluster_addresses WHERE address=?", (a,)).fetchone()
+
+            row = cursor.execute(
+                "SELECT cluster_id FROM cluster_addresses WHERE address=?",
+                (a,)
+            ).fetchone()
+
             if row and row["cluster_id"] == cluster_id:
                 has_in_cluster = True
                 break
+
         if not has_in_cluster:
             continue
+
         learned += batch_process_addresses(addresses, cursor, cache, cluster_id, 0.8, now)
+
     return learned
 
 
 def expand_exchange_cluster_from_db(cursor, cluster_id, name):
-
     now = int(time.time())
     since = now - (LOOKBACK_DAYS * 24 * 3600)
 
@@ -198,15 +204,13 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
         return
 
     change_learned = detect_change_addresses(cursor, txids, cluster_id, now, cache)
-
     multi_learned = detect_multi_input_exchange(cursor, txids, cluster_id, now, cache)
 
-    placeholders = ",".join("?" * len(txids))
-    rows = cursor.execute(f"""
+    rows = batched_select(cursor, """
         SELECT address
         FROM tx_outputs
         WHERE txid IN ({placeholders})
-    """, txids).fetchall()
+    """, txids)
 
     candidates = defaultdict(int)
     for r in rows:
@@ -230,6 +234,7 @@ def run_cluster_expansion():
         db = get_db()
         c = db.cursor()
         clusters = get_exchange_clusters(c)
+
         for row in clusters:
             cluster_id = row["id"]
             name = row["name"]
@@ -237,9 +242,12 @@ def run_cluster_expansion():
                 expand_exchange_cluster_from_db(c, cluster_id, name)
             except Exception as e:
                 logger.exception(f"[CLUSTER] Expansion error for {name}: {e}")
+
         db.commit()
+
     except Exception:
         logger.exception("[CLUSTER] Run expansion failed")
+
     finally:
         if db:
             db.close()
