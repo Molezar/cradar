@@ -10,7 +10,7 @@ import json
 import time
 import requests
 import queue
-
+import sqlite3
 from config import Config
 from database.database import get_db, init_db
 from onchain import mempool_ws_worker, get_event_queue, behavioral_to_exchange
@@ -102,53 +102,70 @@ def fetch_btc_price_with_fallback():
     
     return None
 
+import sqlite3
+import time
+from database.database import get_db
+from logger import logger
+
 def price_sampler():
     """Обновляет цену в БД каждые 30 секунд с резервными источниками"""
     consecutive_failures = 0
-    
+
     while True:
         try:
-            # Пробуем получить цену с резервированием
             price = fetch_btc_price_with_fallback()
             
-            if price:
-                consecutive_failures = 0
-                now = int(time.time())
-                
+            if not price:
+                consecutive_failures += 1
+                logger.error(f"❌ Failed to fetch price (failure #{consecutive_failures})")
+                if consecutive_failures > 5:
+                    logger.warning("Too many failures, sleeping longer")
+                    time.sleep(60)
+                else:
+                    time.sleep(30)
+                continue
+
+            consecutive_failures = 0
+            now = int(time.time())
+
+            # Попытка записать в БД с retries
+            for attempt in range(5):
                 conn = None
                 try:
                     conn = get_db()
                     c = conn.cursor()
-                    
+                    c.execute("BEGIN IMMEDIATE")  # сразу блокируем запись
+
                     c.execute("""
                         INSERT INTO btc_price(ts, price)
                         VALUES (?, ?)
                         ON CONFLICT(ts) DO UPDATE SET
                             price=excluded.price
                     """, (now, price))
-                    
+
                     conn.commit()
                     logger.info(f"✅ Price updated in DB: {price}")
-                    
+                    break  # успешно, выходим из цикла retries
+
+                except sqlite3.OperationalError as db_error:
+                    if "locked" in str(db_error):
+                        wait = 0.1 * (attempt + 1)  # постепенно увеличиваем паузу
+                        logger.warning(f"Database is locked, retrying in {wait:.1f}s (attempt {attempt + 1})")
+                        time.sleep(wait)
+                    else:
+                        logger.error(f"Database error in price_sampler: {db_error}")
+                        break
                 except Exception as db_error:
-                    logger.error(f"Database error in price_sampler: {db_error}")
+                    logger.error(f"Unexpected DB error: {db_error}")
+                    break
                 finally:
                     if conn:
                         conn.close()
-            else:
-                consecutive_failures += 1
-                logger.error(f"❌ Failed to fetch price from all sources (failure #{consecutive_failures})")
-                
-                # Если много ошибок подряд, увеличиваем паузу
-                if consecutive_failures > 5:
-                    logger.warning("Too many failures, increasing sleep time")
-                    time.sleep(60)
-                    continue
-                    
+
         except Exception as e:
-            logger.exception(f"Critical error in price_sampler: {e}")
             consecutive_failures += 1
-        
+            logger.exception(f"Critical error in price_sampler: {e}")
+
         # Обычная пауза 30 секунд
         time.sleep(30)
 
@@ -178,43 +195,58 @@ def candle_sampler():
                 time.sleep(30)
                 continue
 
-            conn = None
-            try:
-                conn = get_db()
-                c = conn.cursor()
+            retries = 3
 
-                for k in klines:
-                    open_time = int(k[0] / 1000)
+            for attempt in range(retries):
+                conn = None
+                try:
+                    conn = get_db()
+                    conn.execute("PRAGMA busy_timeout = 5000")  # ✅ ждём lock
 
-                    c.execute("""
-                        INSERT INTO btc_candles_1m
-                        (open_time, open, high, low, close, volume)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(open_time) DO UPDATE SET
-                            open=excluded.open,
-                            high=excluded.high,
-                            low=excluded.low,
-                            close=excluded.close,
-                            volume=excluded.volume
-                    """, (
-                        open_time,
-                        float(k[1]),
-                        float(k[2]),
-                        float(k[3]),
-                        float(k[4]),
-                        float(k[5])
-                    ))
+                    c = conn.cursor()
+                    conn.execute("BEGIN IMMEDIATE")  # ✅ сразу берём write lock
 
-                conn.commit()
+                    for k in klines:
+                        open_time = int(k[0] / 1000)
 
-            finally:
-                if conn:
-                    conn.close()
+                        c.execute("""
+                            INSERT INTO btc_candles_1m
+                            (open_time, open, high, low, close, volume)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(open_time) DO UPDATE SET
+                                open=excluded.open,
+                                high=excluded.high,
+                                low=excluded.low,
+                                close=excluded.close,
+                                volume=excluded.volume
+                        """, (
+                            open_time,
+                            float(k[1]),
+                            float(k[2]),
+                            float(k[3]),
+                            float(k[4]),
+                            float(k[5])
+                        ))
+
+                    conn.commit()
+                    break  # ✅ успех → выходим из retry
+
+                except Exception as e:
+                    if "database is locked" in str(e) and attempt < retries - 1:
+                        time.sleep(0.5 * (attempt + 1))  # ✅ backoff
+                        continue
+                    logger.exception("Candle sampler DB error")
+                    break
+
+                finally:
+                    if conn:
+                        conn.close()
 
         except Exception:
             logger.exception("Candle sampler error")
 
         time.sleep(30)
+        
         
 # ==============================================
 # EXCHANGE FLOW SAMPLER
