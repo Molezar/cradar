@@ -899,8 +899,8 @@ def marketpulse():
             trend = "NEUTRAL"
 
         # Confidence = нормализуем к 0..1 по max abs net_flow
-        max_abs = max((abs(r["net_flow"]) for r in rows), default=1)
-        confidence = min(abs(total_net) / max_abs, 1.0)
+        max_abs = max((abs(r["net_flow"]) for r in rows), default=0)
+        confidence = min(abs(total_net) / max_abs, 1.0) if max_abs > 0 else 0.0
 
         # KeyFlows: топ 5 кластеров по абсолютной величине net_flow
         top_flows = sorted(rows, key=lambda r: abs(r["net_flow"]), reverse=True)[:5]
