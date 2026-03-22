@@ -578,12 +578,41 @@ def detect_peel_chain(inputs, outputs):
     return None
     
     
-# ==============================================
+# =============================================
 # TX processing
-# ==============================================
+# =============================================
 
+def execute_with_retry(cursor, sql, params=None, retries=5, delay=0.1):
+    """
+    Выполняет SQL с retry при sqlite3.OperationalError (database is locked)
+    """
+    for attempt in range(retries):
+        try:
+            if params:
+                cursor.execute(sql, params)
+            else:
+                cursor.execute(sql)
+            return
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                time.sleep(delay)
+            else:
+                raise
+    raise sqlite3.OperationalError(f"Max retries exceeded for SQL: {sql}")
+
+def executemany_with_retry(cursor, sql, seq_of_params, retries=5, delay=0.1):
+    for attempt in range(retries):
+        try:
+            cursor.executemany(sql, seq_of_params)
+            return
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                time.sleep(delay)
+            else:
+                raise
+    raise sqlite3.OperationalError(f"Max retries exceeded for SQL executemany: {sql}")
+    
 def process_tx(tx, cursor, cluster_cache):
-
     txid = tx.get("txid")
 
     if not txid or txid in _seen_txids:
@@ -605,300 +634,204 @@ def process_tx(tx, cursor, cluster_cache):
     if total < MIN_TRACK_BTC:
         return
 
-    store_tx_io(txid, inputs, outputs, cursor)
+    # ======== Store tx inputs/outputs =========
+    input_rows = [(txid, addr, btc) for addr, btc in inputs.items()]
+    output_rows = [(txid, addr, btc) for addr, btc in outputs.items()]
+
+    executemany_with_retry(cursor, """
+        INSERT OR IGNORE INTO tx_inputs (txid, address, btc)
+        VALUES (?, ?, ?)
+    """, input_rows)
+
+    executemany_with_retry(cursor, """
+        INSERT OR IGNORE INTO tx_outputs (txid, address, btc)
+        VALUES (?, ?, ?)
+    """, output_rows)
 
     now = int(time.time())
 
     # ======================================
     # Exchange consolidation detection
     # ======================================
-
     if detect_exchange_consolidation(inputs, outputs):
-
-        base_cluster = create_behavioral_cluster(
-            list(inputs.keys())[0], cursor, cluster_cache
-        )
-
+        base_cluster = create_behavioral_cluster(list(inputs.keys())[0], cursor, cluster_cache)
         for addr in inputs.keys():
-
-            cursor.execute("""
+            execute_with_retry(cursor, """
                 INSERT OR IGNORE INTO cluster_addresses
                 (address, cluster_id, confidence, first_seen, last_seen)
                 VALUES (?, ?, ?, ?, ?)
             """, (addr, base_cluster, 0.7, now, now))
-
             cluster_cache[addr] = (base_cluster, 0.7)
 
     # ======================================
     # Exchange deposit detection
     # ======================================
-    
     if detect_exchange_deposit(inputs, outputs):
-    
         out_addr = list(outputs.keys())[0]
-    
         cid, _ = resolve_cluster(out_addr, cursor, cluster_cache)
         cid = _cid(cid)
-    
         if not cid:
             cid = create_behavioral_cluster(out_addr, cursor, cluster_cache)
-    
-        cursor.execute("""
+        execute_with_retry(cursor, """
             UPDATE clusters
             SET cluster_type=?, confidence=?
             WHERE id=?
         """, ("EXCHANGE", 0.9, cid))
-    
         logger.info(f"[CLUSTER] Exchange deposit wallet {cid}")
-    
+
     # ======================================
     # Fanout clustering (exchange hotwallet)
     # ======================================
-    
-    # ignore simple self churn
-    if len(inputs) == 1 and len(outputs) == 1:
-        pass
-    else:
-    
+    if not (len(inputs) == 1 and len(outputs) == 1):
         largest_output = max(outputs.values()) if outputs else 0
         num_outputs = len(outputs)
-    
         if len(inputs) == 1 and 15 <= num_outputs <= 100 and total >= 50 and largest_output < total * 0.8:
             avg_output = total / num_outputs
-    
-            # дополнительная защита: если один output слишком велик → не кластеризуем
             if largest_output > avg_output * 3:
-                # это скорее payment, не hotwallet
-                return  # пропустить фан-аут кластеризацию
-    
+                return  # skip fanout
+
             existing_clusters = set()
-    
             for addr in outputs.keys():
                 cid, _ = resolve_cluster(addr, cursor, cluster_cache)
                 cid = _cid(cid)
                 if cid:
                     existing_clusters.add(cid)
-    
-            if existing_clusters:
-                base_cluster = min(existing_clusters)
-            else:
-                base_cluster = create_behavioral_cluster(
-                    list(outputs.keys())[0], cursor, cluster_cache
-                )
-    
+
+            base_cluster = min(existing_clusters) if existing_clusters else create_behavioral_cluster(list(outputs.keys())[0], cursor, cluster_cache)
+
             for addr in outputs.keys():
-    
-                cursor.execute("""
+                execute_with_retry(cursor, """
                     INSERT OR IGNORE INTO cluster_addresses
                     (address, cluster_id, confidence, first_seen, last_seen)
                     VALUES (?, ?, ?, ?, ?)
                 """, (addr, base_cluster, 0.5, now, now))
-    
                 cluster_cache[addr] = (base_cluster, 0.5)
-
 
     # ======================================
     # Hot wallet detection
     # ======================================
-    
     if detect_hot_wallet(inputs, outputs):
-    
-        base_cluster = create_behavioral_cluster(
-            list(outputs.keys())[0], cursor, cluster_cache
-        )
-    
-        cursor.execute("""
+        base_cluster = create_behavioral_cluster(list(outputs.keys())[0], cursor, cluster_cache)
+        execute_with_retry(cursor, """
             UPDATE clusters
             SET cluster_type=?, confidence=?
             WHERE id=?
         """, ("EXCHANGE", 0.85, base_cluster))
-    
         logger.info(f"[CLUSTER] Hot wallet detected {base_cluster}")
-    
+
     # ======================================
     # Change address detection
     # ======================================
-
     change_addr = detect_change_address(inputs, outputs)
-
     if change_addr:
-
         in_addr = list(inputs.keys())[0]
-
         cid, _ = resolve_cluster(in_addr, cursor, cluster_cache)
         cid = _cid(cid)
-
         if cid:
-
-            cursor.execute("""
+            execute_with_retry(cursor, """
                 INSERT OR IGNORE INTO cluster_addresses
                 (address, cluster_id, confidence, first_seen, last_seen)
                 VALUES (?, ?, ?, ?, ?)
             """, (change_addr, cid, 0.8, now, now))
-
             cluster_cache[change_addr] = (cid, 0.8)
 
     # ======================================
     # Peel chain clustering
     # ======================================
-    
     peel_addr = detect_peel_chain(inputs, outputs)
-    
     if peel_addr:
-    
         in_addr = list(inputs.keys())[0]
-    
         cid, _ = resolve_cluster(in_addr, cursor, cluster_cache)
         cid = _cid(cid)
-    
         if cid:
-    
-            cursor.execute("""
+            execute_with_retry(cursor, """
                 INSERT OR IGNORE INTO cluster_addresses
                 (address, cluster_id, confidence, first_seen, last_seen)
                 VALUES (?, ?, ?, ?, ?)
             """, (peel_addr, cid, 0.85, now, now))
-    
             cluster_cache[peel_addr] = (cid, 0.85)
-    
+
     # ======================================
     # Multi-input clustering
     # ======================================
-
     input_addrs = list(inputs.keys())
-    addr_to_cluster = {}
-
-    for addr in input_addrs:
-        cid, _ = resolve_cluster(addr, cursor, cluster_cache)
-        cid = _cid(cid)
-        addr_to_cluster[addr] = cid
+    addr_to_cluster = {addr: _cid(resolve_cluster(addr, cursor, cluster_cache)[0]) for addr in input_addrs}
 
     if input_addrs and len(input_addrs) >= 3 and total >= 5:
-
-        # ======================================
-        # Merge clusters if multiple detected
-        # ======================================
-        
         cluster_ids = list(set(cid for cid in addr_to_cluster.values() if cid))
-        
         if len(cluster_ids) > 1:
-        
             base = min(cluster_ids)
-        
             for cid in cluster_ids:
                 cid = _cid(cid)
                 if cid != base:
                     merge_clusters(base, cid, cursor, cluster_cache)
-        
-        cluster_ids = [cid for cid in addr_to_cluster.values() if cid]
 
-        if cluster_ids:
-            base_cluster = min(cluster_ids)
-        else:
-            base_cluster = create_behavioral_cluster(
-                input_addrs[0], cursor, cluster_cache
-            )
+        cluster_ids = [cid for cid in addr_to_cluster.values() if cid]
+        base_cluster = min(cluster_ids) if cluster_ids else create_behavioral_cluster(input_addrs[0], cursor, cluster_cache)
 
         for addr in input_addrs:
-
             cid = addr_to_cluster[addr]
-
             if not cid:
-
-                cursor.execute("""
+                execute_with_retry(cursor, """
                     INSERT OR IGNORE INTO cluster_addresses
                     (address, cluster_id, confidence, first_seen, last_seen)
                     VALUES (?, ?, ?, ?, ?)
                 """, (addr, base_cluster, 0.6, now, now))
-
                 addr_to_cluster[addr] = base_cluster
                 cluster_cache[addr] = (base_cluster, 0.6)
-
             else:
                 update_address_seen(addr, cursor)
 
-        cluster_ids_set = set(addr_to_cluster.values())
-
-        for cid in cluster_ids_set:
-
+        for cid in set(addr_to_cluster.values()):
             cid = _cid(cid)
-
             cluster_type = _cluster_type_cache.get(cid)
             if not cluster_type:
-                row = cursor.execute(
-                    "SELECT cluster_type FROM clusters WHERE id=?",
-                    (cid,)
-                ).fetchone()
+                row = cursor.execute("SELECT cluster_type FROM clusters WHERE id=?", (cid,)).fetchone()
                 cluster_type = row["cluster_type"] if row else None
                 _cluster_type_cache[cid] = cluster_type
-            
                 if len(_cluster_type_cache) > CACHE_LIMIT:
                     _cluster_type_cache.popitem(last=False)
-                    
             if cluster_type == "BEHAVIORAL":
                 behavioral_to_exchange(cid, cursor, now)
 
     # ======================================
     # Update output address activity
     # ======================================
-
     for addr in outputs.keys():
-
         cid, _ = resolve_cluster(addr, cursor, cluster_cache)
         cid = _cid(cid)
-
         if cid:
             update_address_seen(addr, cursor)
 
     # ======================================
     # Flow classification
     # ======================================
-
     flows = classify_flow(inputs, outputs, cursor, cluster_cache)
-
     if not flows:
         flows = heuristic_flow_classification(inputs, outputs, total)
 
-    cursor.execute("""
-        INSERT OR IGNORE INTO whale_tx(txid, btc, time)
-        VALUES (?,?,?)
-    """, (txid, total, now))
+    execute_with_retry(cursor, "INSERT OR IGNORE INTO whale_tx(txid, btc, time) VALUES (?,?,?)", (txid, total, now))
 
-    if len(inputs) == 1 and len(outputs) == 1:
-        confidence = 0.9
-    elif len(inputs) > 1 or len(outputs) > 2:
-        confidence = 0.6
-    else:
-        confidence = 0.7
+    confidence = 0.9 if len(inputs) == 1 and len(outputs) == 1 else 0.6 if len(inputs) > 1 or len(outputs) > 2 else 0.7
 
     for from_c, to_c, flow_type, flow_btc in flows:
-
-        from_c = _cid(from_c)
-        to_c = _cid(to_c)
-
-        cursor.execute("""
-            INSERT OR IGNORE INTO whale_classification
+        from_c, to_c = _cid(from_c), _cid(to_c)
+        execute_with_retry(cursor, """
+            INSERT INTO whale_classification
             (txid, btc, time, from_cluster, to_cluster, flow_type, confidence)
             VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(txid, flow_type, from_cluster, to_cluster)
+            DO UPDATE SET btc = excluded.btc,
+                          time = excluded.time,
+                          confidence = excluded.confidence
         """, (txid, flow_btc, now, from_c, to_c, flow_type, confidence))
 
-        # ======================================
         # Exchange flow aggregation (1h bucket)
-        # ======================================
-
         bucket = now - (now % 3600)
-
         if flow_type in ("DEPOSIT", "WITHDRAW", "INTERNAL") and flow_btc >= MIN_WHALE_BTC:
-
-            if flow_type == "DEPOSIT":
-                cid = to_c
-            elif flow_type == "WITHDRAW":
-                cid = from_c
-            else:
-                cid = from_c
-
+            cid = to_c if flow_type == "DEPOSIT" else from_c
             if cid:
-                cursor.execute("""
+                execute_with_retry(cursor, """
                     INSERT INTO exchange_flow (ts, cluster_id, flow_type, btc)
                     VALUES (?,?,?,?)
                     ON CONFLICT(ts, cluster_id, flow_type)
@@ -906,22 +839,10 @@ def process_tx(tx, cursor, cluster_cache):
                 """, (bucket, cid, flow_type, flow_btc))
 
         if flow_btc >= ALERT_WHALE_BTC:
-
-            event = {
-                "txid": txid,
-                "btc": round(flow_btc, 4),
-                "flow_type": flow_type,
-                "from_cluster": from_c,
-                "to_cluster": to_c,
-                "confidence": confidence,
-                "time": now
-            }
-
+            event = {"txid": txid, "btc": round(flow_btc, 4), "flow_type": flow_type,
+                     "from_cluster": from_c, "to_cluster": to_c, "confidence": confidence, "time": now}
             _events.put(event)
-
-            logger.info(
-                f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}"
-            )
+            logger.info(f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}")
 
 
 # ==============================================
@@ -929,13 +850,9 @@ def process_tx(tx, cursor, cluster_cache):
 # ==============================================
 
 async def mempool_ws_worker():
-
     while True:
-
         last_log = 0
-
         try:
-
             logger.info("[MEMPOOL] Connecting via WebSocket...")
 
             async with websockets.connect(
@@ -946,23 +863,18 @@ async def mempool_ws_worker():
             ) as ws:
 
                 await ws.send(json.dumps({"track-mempool": True}))
-
                 logger.info("[MEMPOOL] Subscribed to mempool")
 
                 cluster_cache_session = {}
 
                 with get_db() as conn:
-
                     c = conn.cursor()
 
                     async for raw in ws:
-
                         now_ts = time.time()
 
                         if now_ts - last_log > 120:
-                            logger.info(
-                                f"[MEMPOOL] Alive. Seen txids: {len(_seen_txids)}"
-                            )
+                            logger.info(f"[MEMPOOL] Alive. Seen txids: {len(_seen_txids)}")
                             last_log = now_ts
 
                         try:
@@ -971,17 +883,23 @@ async def mempool_ws_worker():
                             continue
 
                         txs = data.get("mempool-transactions", {}).get("added", [])
-
                         if not txs:
                             continue
 
+                        # process each tx safely with retries
                         for tx in txs:
-                            process_tx(tx, c, cluster_cache_session)
+                            try:
+                                process_tx(tx, c, cluster_cache_session)
+                            except sqlite3.OperationalError as e:
+                                logger.warning(f"[MEMPOOL] DB locked while processing tx {tx.get('txid')}: {e}")
+                                # можно пропустить или повторить позже
 
-                        conn.commit()
+                        # безопасный commit с retry
+                        try:
+                            execute_with_retry(c, "COMMIT")
+                        except sqlite3.OperationalError as e:
+                            logger.error(f"[MEMPOOL] Failed to commit: {e}")
 
         except Exception as e:
-
             logger.error(f"[MEMPOOL] WS error: {e}")
-
             await asyncio.sleep(5)
