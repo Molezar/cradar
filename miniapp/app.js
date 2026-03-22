@@ -39,11 +39,10 @@ function flowLabel(flow) {
 async function load() {
     try {
 
-        const [wj, pcj, volj, flowj, rawj] = await Promise.all([
+        const [wj, pcj, volj, rawj] = await Promise.all([
             fetch("/whales?t=" + Date.now()).then(r => r.json()),
             fetch("/price?t=" + Date.now()).then(r => r.json()),
             fetch("/volumes?t=" + Date.now()).then(r => r.json()),
-            fetch("/exchange_flow?window=600&t=" + Date.now()).then(r => r.json()),
             fetch("/exchange_flow_raw?limit=50&t=" + Date.now()).then(r => r.json())
         ]);
 
@@ -51,19 +50,13 @@ async function load() {
         let out = "";
 
         if (wj.whales && Array.isArray(wj.whales)) {
-
             for (const x of wj.whales) {
-
                 const btc = Number(x.btc);
                 if (isNaN(btc) || btc <= 0) continue;
 
                 const conf = Number(x.confidence) || 0;
-
                 const cls = btc >= ALERT_WHALE_BTC ? "whale huge" : "whale";
-
-                const confText = conf
-                    ? `<span class="confidence">(${(conf*100).toFixed(0)}%)</span>`
-                    : "";
+                const confText = conf ? `<span class="confidence">(${(conf*100).toFixed(0)}%)</span>` : "";
 
                 out += `<div class="${cls}">
                     ${fmtTime(x.time)} &nbsp;
@@ -102,7 +95,6 @@ async function load() {
                     mpj.keyFlows.forEach(f => {
                         const arrow = f.btc < 0 ? "→" : f.btc > 0 ? "←" : "•";
                         const cls   = f.btc < 0 ? "flow withdraw" : f.btc > 0 ? "flow deposit" : "flow transfer";
-                    
                         mpHtml += `<div style="margin-left: 12px;">
                             Cluster ${f.cluster_id}: <span class="${cls}">${arrow} ${Math.abs(f.btc).toFixed(2)} BTC</span>
                         </div>`;
@@ -133,36 +125,15 @@ async function load() {
 
         document.getElementById("volumes").innerHTML = volHtml;
 
-        // --- Exchange Flow Minimap ---
-        let flowHtml = "<div class='volumes'><div class='pred'>=== EXCHANGE FLOW (10 min) ===</div>";
-
-        for (const x of (flowj.flows || []).sort((a,b)=>Math.abs(b.net_flow)-Math.abs(a.net_flow))) {
-
-            const net = Number(x.net_flow) || 0;
-        
-            const color = net < 0 ? "#00ffaa" : net > 0 ? "#ff5c5c" : "gray";
-            const arrow = net < 0 ? "→" : net > 0 ? "←" : "•";
-        
-            flowHtml += `<div style="color:${color}">
-                Cluster ${x.cluster_id}: ${arrow} ${Math.abs(net).toFixed(2)} BTC
-            </div>`;
-        }
-
-        flowHtml += "</div>";
-
-        const el = document.getElementById("exchange_flow");
-        if (el) el.innerHTML = flowHtml;
-
         // --- RAW Exchange Flow ---
         let rawHtml = "<div class='volumes'><div class='pred'>=== RAW EXCHANGE FLOW ===</div>";
 
         for (const r of rawj.rows || []) {
-
             let color = "gray";
             let arrow = "•";
             
             if (r.flow_type === "DEPOSIT") {
-                color = "#ff5c5c";
+                color = "#ff3b3b";
                 arrow = "←";
             }
             
@@ -183,10 +154,8 @@ async function load() {
         document.getElementById("exchange_flow_raw").innerHTML = rawHtml;
 
     } catch (e) {
-
         document.getElementById("info").innerText = "API error";
         console.error(e);
-
     }
 }
 
