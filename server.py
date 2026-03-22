@@ -102,10 +102,6 @@ def fetch_btc_price_with_fallback():
     
     return None
 
-import sqlite3
-import time
-from database.database import get_db
-from logger import logger
 
 def price_sampler():
     """Обновляет цену в БД каждые 30 секунд с резервными источниками"""
