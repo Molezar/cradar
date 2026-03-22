@@ -1,3 +1,4 @@
+# cluster_engine.py
 import time
 from collections import defaultdict
 
@@ -232,18 +233,19 @@ def run_cluster_expansion():
     db = None
     try:
         db = get_db()
-        c = db.cursor()
-        clusters = get_exchange_clusters(c)
+        clusters = get_exchange_clusters(db.cursor())
 
         for row in clusters:
             cluster_id = row["id"]
             name = row["name"]
+
             try:
+                c = db.cursor()  # ✅ важно
                 expand_exchange_cluster_from_db(c, cluster_id, name)
+                db.commit()
+                time.sleep(0.01)  # (опционально)
             except Exception as e:
                 logger.exception(f"[CLUSTER] Expansion error for {name}: {e}")
-
-        db.commit()
 
     except Exception:
         logger.exception("[CLUSTER] Run expansion failed")

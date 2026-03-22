@@ -32,8 +32,6 @@ CORS(app)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MINIAPP_DIR = os.path.join(BASE_DIR, "miniapp")
 
-WINDOWS = [600, 3600]
-
 # ==============================================
 # BTC PRICE
 # ==============================================
@@ -424,76 +422,6 @@ async def research_market_updater():
             logger.exception("research_market_updater error")
 
         await asyncio.sleep(60)
-        
-# =============================================
-# TRAINER
-# =============================================
-
-async def trainer():
-    while True:
-        try:
-            now = int(time.time())
-
-            conn = None
-            try:
-                conn = get_db()
-                c = conn.cursor()
-
-                for w in WINDOWS:
-                    rows = c.execute("""
-                        SELECT ts, price
-                        FROM btc_price
-                        WHERE ts <= ?
-                        AND ts >= ?
-                        ORDER BY ts DESC
-                    """, (now, now - w)).fetchall()
-
-                    if not rows:
-                        continue
-
-                    p1 = rows[0]["price"]
-                    p0 = rows[-1]["price"]
-
-                    if not p0:
-                        continue
-
-                    dp = (p1 - p0) / p0
-
-                    row = c.execute("""
-                        SELECT
-                            COALESCE(SUM(CASE WHEN flow_type='DEPOSIT' THEN btc END), 0) as buy,
-                            COALESCE(SUM(CASE WHEN flow_type='WITHDRAW' THEN btc END), 0) as sell
-                        FROM exchange_flow
-                        WHERE ts > ?
-                    """, (now - w,)).fetchone()
-
-                    buy = row["buy"]
-                    sell = row["sell"]
-                    net_flow = buy - sell
-
-                    value = dp / (abs(net_flow) + 1)
-
-                    c.execute("""
-                        INSERT INTO whale_correlation(window, weight, samples)
-                        VALUES (?, ?, 1)
-                        ON CONFLICT(window) DO UPDATE SET
-                            weight = (
-                                (whale_correlation.weight * whale_correlation.samples + excluded.weight)
-                                / (whale_correlation.samples + 1)
-                            ),
-                            samples = whale_correlation.samples + 1
-                    """, (w, value))
-
-                conn.commit()
-
-            finally:
-                if conn:
-                    conn.close()
-
-        except Exception:
-            logger.exception("Trainer error")
-
-        await asyncio.sleep(300)
 
 
 # =============================================
@@ -1088,45 +1016,6 @@ def candles():
 
     except Exception:
         logger.exception("Candles endpoint error")
-        return jsonify({"error": "Internal server error"}), 500
-    finally:
-        if conn:
-            conn.close()
-
-
-@app.route("/prediction")
-def prediction():
-    conn = None
-    try:
-        conn = get_db()
-        row = conn.execute(
-            "SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1"
-        ).fetchone()
-
-        if not row:
-            return jsonify({})
-
-        price = row["price"]
-
-        weights = conn.execute(
-            "SELECT window, weight FROM whale_correlation WHERE window IN ({})".format(
-                ",".join("?" * len(WINDOWS))
-            ),
-            WINDOWS
-        ).fetchall()
-
-        out = {}
-        for r in weights:
-            pct = r["weight"] * 100
-            out[str(r["window"])] = {
-                "pct": round(pct, 2),
-                "target": round(price * (1 + pct / 100), 2)
-            }
-
-        return jsonify(out)
-
-    except Exception:
-        logger.exception("Prediction endpoint error")
         return jsonify({"error": "Internal server error"}), 500
     finally:
         if conn:

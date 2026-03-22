@@ -1,4 +1,3 @@
-//app.js
 let lastPrice = null;
 const ALERT_WHALE_BTC = window.ALERT_WHALE_BTC || 1000;
 
@@ -40,9 +39,8 @@ function flowLabel(flow) {
 async function load() {
     try {
 
-        const [wj, pj, pcj, volj, flowj, rawj] = await Promise.all([
+        const [wj, pcj, volj, flowj, rawj] = await Promise.all([
             fetch("/whales?t=" + Date.now()).then(r => r.json()),
-            fetch("/prediction?t=" + Date.now()).then(r => r.json()),
             fetch("/price?t=" + Date.now()).then(r => r.json()),
             fetch("/volumes?t=" + Date.now()).then(r => r.json()),
             fetch("/exchange_flow?window=600&t=" + Date.now()).then(r => r.json()),
@@ -87,47 +85,21 @@ async function load() {
             document.getElementById("info").innerText = "BTC price…";
         }
 
-        // --- AI Market Forecast ---
-        let pred = "<div class='pred'>=== AI MARKET FORECAST ===</div>";
-
-        for (const horizon in pj) {
-
-            const row = pj[horizon];
-            if (!row) continue;
-
-            const pct = Number(row.pct) || 0;
-            const target = Number(row.target) || 0;
-
-            const dir = pct > 0 ? "⬆" : pct < 0 ? "⬇" : "→";
-
-            const minutes = Number(horizon) / 60;
-
-            pred += `<div>${minutes} min ${dir} ${pct.toFixed(2)}% → $${target.toFixed(0)}</div>`;
-        }
-
-        document.getElementById("forecast").innerHTML = pred;
-
         // --- Market Pulse Section ---
         const marketPulseEl = document.getElementById("marketpulse");
         if (marketPulseEl) {
             try {
                 const mpj = await fetch("/marketpulse?t=" + Date.now()).then(r => r.json());
                 
-                // предполагаем структура mpj:
-                // mpj = { trend: "UP"|"DOWN"|"NEUTRAL", confidence: 0..1, keyFlows: [ {cluster_id, btc, flow_type} ] }
-        
                 let mpHtml = "<div class='pred'>=== MARKET PULSE ===</div>";
         
-                // Основной прогноз
                 const trendEmoji = mpj.trend === "UP" ? "⬆" : mpj.trend === "DOWN" ? "⬇" : "→";
                 const confPct = ((mpj.confidence || 0) * 100).toFixed(0);
                 mpHtml += `<div>Trend: ${trendEmoji} ${mpj.trend} (Confidence: ${confPct}%)</div>`;
         
-                // Ключевые потоки последних минут
                 if (Array.isArray(mpj.keyFlows) && mpj.keyFlows.length) {
                     mpHtml += "<div>Key Flows:</div>";
                     mpj.keyFlows.forEach(f => {
-                        // Логика как в Exchange Flow
                         const arrow = f.btc < 0 ? "→" : f.btc > 0 ? "←" : "•";
                         const cls   = f.btc < 0 ? "flow withdraw" : f.btc > 0 ? "flow deposit" : "flow transfer";
                     

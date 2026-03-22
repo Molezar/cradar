@@ -19,19 +19,10 @@ h1 {
     margin-bottom: 10px;
 }
 
-/* Блок прогноза */
-#forecast {
-    margin: 10px 0 15px 0;
-}
-
 .pred {
     color: #ff9900;
     font-weight: bold;
     margin-bottom: 6px;
-}
-
-#forecast div {
-    padding: 2px 0;
 }
 
 /* Список транзакций */
