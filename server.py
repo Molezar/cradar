@@ -102,6 +102,23 @@ def fetch_btc_price_with_fallback():
     
     return None
 
+def fetch_binance_klines(limit=2):
+    try:
+        r = requests.get(
+            "https://api.binance.com/api/v3/klines",
+            params={
+                "symbol": "BTCUSDT",
+                "interval": "1m",
+                "limit": limit
+            },
+            timeout=10
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        logger.warning(f"Failed to fetch klines: {e}")
+        return []
+
 
 def price_sampler():
     """Обновляет цену в БД каждые 30 секунд с резервными источниками"""
@@ -164,24 +181,7 @@ def price_sampler():
 
         # Обычная пауза 30 секунд
         time.sleep(30)
-
-def fetch_binance_klines(limit=2):
-    try:
-        r = requests.get(
-            "https://api.binance.com/api/v3/klines",
-            params={
-                "symbol": "BTCUSDT",
-                "interval": "1m",
-                "limit": limit
-            },
-            timeout=10
-        )
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        logger.warning(f"Failed to fetch klines: {e}")
-        return []
-
+        
 def candle_sampler():
     while True:
         try:
@@ -247,43 +247,60 @@ def candle_sampler():
 # ==============================================
 # EXCHANGE FLOW SAMPLER
 # ==============================================
-
 async def exchange_flow_sampler():
     while True:
         try:
             now = int(time.time())
             since = now - 600
+            retries = 5
 
-            conn = None
-            try:
-                conn = get_db()
-                c = conn.cursor()
+            for attempt in range(retries):
+                conn = None
+                try:
+                    conn = get_db()
+                    c = conn.cursor()
+                    c.execute("BEGIN IMMEDIATE")  # сразу берём write lock
 
-                c.execute("""
-                    INSERT INTO exchange_flow (ts, cluster_id, flow_type, btc)
-                    SELECT ?, to_cluster, 'DEPOSIT', SUM(btc)
-                    FROM whale_classification
-                    WHERE time > ? AND flow_type='DEPOSIT'
-                    AND to_cluster IS NOT NULL
-                    GROUP BY to_cluster
-                    UNION ALL
-                    SELECT ?, from_cluster, 'WITHDRAW', SUM(btc)
-                    FROM whale_classification
-                    WHERE time > ? AND flow_type='WITHDRAW'
-                    AND from_cluster IS NOT NULL
-                    GROUP BY from_cluster
-                    ON CONFLICT(ts, cluster_id, flow_type)
-                    DO UPDATE SET btc = excluded.btc
-                """, (now, since, now, since))
+                    c.execute("""
+                        INSERT INTO exchange_flow (ts, cluster_id, flow_type, btc)
+                        SELECT ?, to_cluster, 'DEPOSIT', SUM(btc)
+                        FROM whale_classification
+                        WHERE time > ? AND flow_type='DEPOSIT'
+                        AND to_cluster IS NOT NULL
+                        GROUP BY to_cluster
+                        UNION ALL
+                        SELECT ?, from_cluster, 'WITHDRAW', SUM(btc)
+                        FROM whale_classification
+                        WHERE time > ? AND flow_type='WITHDRAW'
+                        AND from_cluster IS NOT NULL
+                        GROUP BY from_cluster
+                        ON CONFLICT(ts, cluster_id, flow_type)
+                        DO UPDATE SET btc = excluded.btc
+                    """, (now, since, now, since))
 
-                conn.commit()
+                    conn.commit()
+                    break  # успешно, выходим из retry
 
-            finally:
-                if conn:
-                    conn.close()
+                except sqlite3.OperationalError as db_error:
+                    if "locked" in str(db_error):
+                        wait = 0.1 * (attempt + 1)
+                        logger.warning(f"Database is locked, retrying in {wait:.1f}s (attempt {attempt + 1})")
+                        await asyncio.sleep(wait)
+                        continue
+                    else:
+                        logger.error(f"Database error: {db_error}")
+                        break
+
+                except Exception as e:
+                    logger.exception(f"Unexpected error in exchange_flow_sampler: {e}")
+                    break
+
+                finally:
+                    if conn:
+                        conn.close()
 
         except Exception:
-            logger.exception("Exchange flow sampler error")
+            logger.exception("Exchange flow sampler outer error")
 
         await asyncio.sleep(60)
         
@@ -375,19 +392,29 @@ async def research_market_sampler():
                 price = price_row["price"]
 
                 # ---------------------------------
-                # insert research row
+                # insert research row с BEGIN IMMEDIATE и retry
                 # ---------------------------------
-                c.execute("""
-                    INSERT INTO research_market (
-                        ts, whale_net, exchange_net, exchange_net_ratio,
-                        price, volatility, cluster_concentration
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    now, whale_net, exchange_net, exchange_net_ratio,
-                    price, volatility, cluster_concentration
-                ))
-
-                conn.commit()
+                retries = 5
+                while retries > 0:
+                    try:
+                        c.execute("BEGIN IMMEDIATE")
+                        c.execute("""
+                            INSERT INTO research_market (
+                                ts, whale_net, exchange_net, exchange_net_ratio,
+                                price, volatility, cluster_concentration
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            now, whale_net, exchange_net, exchange_net_ratio,
+                            price, volatility, cluster_concentration
+                        ))
+                        conn.commit()
+                        break
+                    except sqlite3.OperationalError as e:
+                        if "database is locked" in str(e):
+                            retries -= 1
+                            time.sleep(0.05)
+                        else:
+                            raise
 
             finally:
                 if conn:
@@ -406,7 +433,6 @@ async def research_market_updater():
     while True:
         try:
             now = int(time.time())
-
             conn = None
             try:
                 conn = get_db()
@@ -424,23 +450,38 @@ async def research_market_updater():
 
                 price = price_row["price"]
 
-                # update 15m
-                c.execute("""
-                    UPDATE research_market
-                    SET price_15m = ?
-                    WHERE price_15m IS NULL
-                      AND ts <= ?
-                """, (price, now - 900))
+                # ---------------------------------
+                # update с BEGIN IMMEDIATE и retry
+                # ---------------------------------
+                retries = 5
+                while retries > 0:
+                    try:
+                        c.execute("BEGIN IMMEDIATE")
 
-                # update 1h
-                c.execute("""
-                    UPDATE research_market
-                    SET price_1h = ?
-                    WHERE price_1h IS NULL
-                      AND ts <= ?
-                """, (price, now - 3600))
+                        # update 15m
+                        c.execute("""
+                            UPDATE research_market
+                            SET price_15m = ?
+                            WHERE price_15m IS NULL
+                              AND ts <= ?
+                        """, (price, now - 900))
 
-                conn.commit()
+                        # update 1h
+                        c.execute("""
+                            UPDATE research_market
+                            SET price_1h = ?
+                            WHERE price_1h IS NULL
+                              AND ts <= ?
+                        """, (price, now - 3600))
+
+                        conn.commit()
+                        break
+                    except sqlite3.OperationalError as e:
+                        if "database is locked" in str(e):
+                            retries -= 1
+                            time.sleep(0.05)
+                        else:
+                            raise
 
             finally:
                 if conn:
@@ -457,11 +498,14 @@ async def research_market_updater():
 # =============================================
 
 async def behavioral_upgrade_worker():
+    """
+    Каждые 5 минут проверяет BEHAVIORAL кластеры и апгрейдит их до EXCHANGE
+    при соблюдении паттернов транзакций.
+    """
 
     while True:
         try:
             now = int(time.time())
-
             conn = None
             try:
                 conn = get_db()
@@ -473,18 +517,31 @@ async def behavioral_upgrade_worker():
                     WHERE cluster_type='BEHAVIORAL'
                 """).fetchall()
 
+                if not rows:
+                    continue
+
                 upgraded = 0
+                retries = 5
+                while retries > 0:
+                    try:
+                        c.execute("BEGIN IMMEDIATE")
 
-                for r in rows:
-                    cid = r["id"]
+                        for r in rows:
+                            cid = r["id"]
+                            if behavioral_to_exchange(cid, c, now):
+                                upgraded += 1
 
-                    if behavioral_to_exchange(cid, c, now):
-                        upgraded += 1
+                        conn.commit()
+                        break  # успех
+                    except sqlite3.OperationalError as e:
+                        if "database is locked" in str(e):
+                            retries -= 1
+                            time.sleep(0.05)
+                        else:
+                            raise
 
                 if upgraded:
                     logger.info(f"[CLUSTER] Upgraded {upgraded} behavioral clusters")
-
-                conn.commit()
 
             finally:
                 if conn:
@@ -502,9 +559,7 @@ async def behavioral_upgrade_worker():
 
 async def signal_alert_worker():
     """
-    Генерирует сигнал (опережающий) с учетом динамических порогов,
-    кластера, DELTA и вероятностей исторических сильных сигналов.
-    Сохраняет все данные в таблицу signal_events.
+    Генерирует сигналы с защитой от database locked.
     """
     while True:
         try:
@@ -515,147 +570,95 @@ async def signal_alert_worker():
             c = conn.cursor()
 
             # --------------------------
-            # 1. Exchange flows (last 1h)
+            # Retry с BEGIN IMMEDIATE
             # --------------------------
-            row = c.execute("""
-                SELECT SUM(CASE WHEN flow_type='DEPOSIT' THEN btc ELSE 0 END) as inflow,
-                       SUM(CASE WHEN flow_type='WITHDRAW' THEN btc ELSE 0 END) as outflow,
-                       SUM(CASE WHEN flow_type='INTERNAL' THEN btc ELSE 0 END) as internal
-                FROM exchange_flow
-                WHERE ts > ?
-            """, (hour_ago,)).fetchone()
+            retries = 5
+            while retries > 0:
+                try:
+                    c.execute("BEGIN IMMEDIATE")
 
-            inflow = row["inflow"] or 0
-            outflow = row["outflow"] or 0
-            internal = row["internal"] or 0
+                    # --- Exchange flows ---
+                    row = c.execute("""
+                        SELECT SUM(CASE WHEN flow_type='DEPOSIT' THEN btc ELSE 0 END) as inflow,
+                               SUM(CASE WHEN flow_type='WITHDRAW' THEN btc ELSE 0 END) as outflow,
+                               SUM(CASE WHEN flow_type='INTERNAL' THEN btc ELSE 0 END) as internal
+                        FROM exchange_flow
+                        WHERE ts > ?
+                    """, (hour_ago,)).fetchone()
 
-            net = inflow - outflow
-            total_flow = inflow + outflow
-            exchange_ratio = net / total_flow if total_flow > 0 else 0
+                    inflow = row["inflow"] or 0
+                    outflow = row["outflow"] or 0
+                    internal = row["internal"] or 0
 
-            # --------------------------
-            # 2. Volatility
-            # --------------------------
-            vol_row = c.execute("""
-                SELECT MAX(price) as max_p, MIN(price) as min_p
-                FROM btc_price
-                WHERE ts > ?
-            """, (hour_ago,)).fetchone()
-            volatility = (vol_row["max_p"] - vol_row["min_p"]) / vol_row["min_p"] if vol_row and vol_row["max_p"] and vol_row["min_p"] else 0
+                    net = inflow - outflow
+                    total_flow = inflow + outflow
+                    exchange_ratio = net / total_flow if total_flow > 0 else 0
 
-            # --------------------------
-            # 3. Historical signals for threshold
-            # --------------------------
-            hist_rows = c.execute("""
-                SELECT exchange_net_ratio, volatility, price, price_1h, cluster_concentration
-                FROM research_market
-                WHERE exchange_net_ratio IS NOT NULL AND volatility IS NOT NULL
-            """).fetchall()
+                    # --- Volatility ---
+                    vol_row = c.execute("""
+                        SELECT MAX(price) as max_p, MIN(price) as min_p
+                        FROM btc_price
+                        WHERE ts > ?
+                    """, (hour_ago,)).fetchone()
+                    volatility = (vol_row["max_p"] - vol_row["min_p"]) / vol_row["min_p"] if vol_row and vol_row["max_p"] and vol_row["min_p"] else 0
 
-            signals_hist = [(r["exchange_net_ratio"] or 0)*(r["volatility"] or 0) for r in hist_rows]
-            threshold = sorted(abs(s) for s in signals_hist)[int(len(signals_hist)*0.9)] if len(signals_hist) >= 20 else 0.0005
-            
-            # --------------------------
-            # 4. Delta (усиление сигнала)
-            # --------------------------
-            prev_ratio = hist_rows[-1]["exchange_net_ratio"] if len(hist_rows) > 0 else 0
-            exchange_delta = exchange_ratio - prev_ratio
-            delta_values = [abs((hist_rows[i]["exchange_net_ratio"] or 0) - (hist_rows[i-1]["exchange_net_ratio"] or 0))
-                            for i in range(1, len(hist_rows))]
-            p95_delta = sorted(delta_values)[int(len(delta_values)*0.95)] if delta_values else 0.01
+                    # --- Historical signals ---
+                    hist_rows = c.execute("""
+                        SELECT exchange_net_ratio, volatility, price, price_1h, cluster_concentration
+                        FROM research_market
+                        WHERE exchange_net_ratio IS NOT NULL AND volatility IS NOT NULL
+                    """).fetchall()
+                    signals_hist = [(r["exchange_net_ratio"] or 0)*(r["volatility"] or 0) for r in hist_rows]
+                    threshold = sorted(abs(s) for s in signals_hist)[int(len(signals_hist)*0.9)] if len(signals_hist) >= 20 else 0.0005
 
-            # --------------------------
-            # 5. Cluster concentration
-            # --------------------------
-            cluster_rows = c.execute("""
-                SELECT cluster_id, SUM(btc) as cluster_btc
-                FROM exchange_flow
-                WHERE ts > ?
-                GROUP BY cluster_id
-            """, (hour_ago,)).fetchall()
-            total_btc = sum(r["cluster_btc"] or 0 for r in cluster_rows)
-            max_cluster = max(r["cluster_btc"] or 0 for r in cluster_rows) if cluster_rows else 0
-            cluster_concentration = (max_cluster / total_btc) if total_btc > 0 else 0
+                    # --- Delta, Cluster concentration ---
+                    prev_ratio = hist_rows[-1]["exchange_net_ratio"] if len(hist_rows) > 0 else 0
+                    exchange_delta = exchange_ratio - prev_ratio
+                    delta_values = [abs((hist_rows[i]["exchange_net_ratio"] or 0) - (hist_rows[i-1]["exchange_net_ratio"] or 0)) for i in range(1, len(hist_rows))]
+                    p95_delta = sorted(delta_values)[int(len(delta_values)*0.95)] if delta_values else 0.01
 
-            # --------------------------
-            # 6. Signal
-            # --------------------------
-            signal = exchange_ratio * volatility
-            delta_note = ""
-            if abs(exchange_delta) > p95_delta:
-                signal *= 1.5
-                delta_note = f"⚡ DELTA surge! ({exchange_delta:.4f} > {p95_delta:.4f}) → signal x1.5"
+                    cluster_rows = c.execute("""
+                        SELECT cluster_id, SUM(btc) as cluster_btc
+                        FROM exchange_flow
+                        WHERE ts > ?
+                        GROUP BY cluster_id
+                    """, (hour_ago,)).fetchall()
+                    total_btc = sum(r["cluster_btc"] or 0 for r in cluster_rows)
+                    max_cluster = max(r["cluster_btc"] or 0 for r in cluster_rows) if cluster_rows else 0
+                    cluster_concentration = (max_cluster / total_btc) if total_btc > 0 else 0
 
-            # --------------------------
-            # 7. Probability P(up/down) based on historical strong signals
-            # --------------------------
-            def safe_delta(r):
-                if r["price"] is None or r["price_1h"] is None:
-                    return None
-                return (r["price_1h"] - r["price"]) / r["price"]
+                    # --- Signal & insert ---
+                    signal = exchange_ratio * volatility
+                    delta_note = ""
+                    if abs(exchange_delta) > p95_delta:
+                        signal *= 1.5
+                        delta_note = f"⚡ DELTA surge! ({exchange_delta:.4f} > {p95_delta:.4f}) → signal x1.5"
 
-            sig_p90 = sorted(abs(s) for s in signals_hist)[int(len(signals_hist)*0.9)] if signals_hist else 0.001
-
-            strong_inflow_up = sum(
-                1 for r in hist_rows
-                if (r["exchange_net_ratio"] or 0) > sig_p90
-                and (delta := safe_delta(r)) is not None
-                and delta > 0
-            )
-            strong_outflow_down = sum(
-                1 for r in hist_rows
-                if (r["exchange_net_ratio"] or 0) < -sig_p90
-                and (delta := safe_delta(r)) is not None
-                and delta < 0
-            )
-            strong_total = sum(1 for r in hist_rows if r["exchange_net_ratio"] is not None and abs(r["exchange_net_ratio"]) > sig_p90)
-            p_up = strong_inflow_up / strong_total*100 if strong_total else 0
-            p_down = strong_outflow_down / strong_total*100 if strong_total else 0
-
-            # --------------------------
-            # 8. BTC price change
-            # --------------------------
-            start_row = c.execute("SELECT price FROM btc_price WHERE ts >= ? ORDER BY ts ASC LIMIT 1", (hour_ago,)).fetchone()
-            end_row = c.execute("SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1").fetchone()
-            price_change = (end_row["price"] - start_row["price"]) / start_row["price"] * 100 if start_row and end_row and start_row["price"] else None
-
-            # --------------------------
-            # 9. Decide signal
-            # --------------------------
-            if abs(signal) >= threshold:
-                direction = "SELL" if signal > 0 else "BUY"
-                probability = p_down if direction == "SELL" else p_up
-                
-                if probability < 60:
-                    pass
-                else:
-                    msg_text = (
-                        f"🚨 SIGNAL {direction}\n"
-                        f"Signal: {signal:.6f}\n"
-                        f"Exchange ratio: {exchange_ratio:.4f}\n"
-                        f"Volatility: {volatility:.4f}\n"
-                        f"Threshold (p90): {threshold:.6f}\n"
-                        f"Cluster concentration: {cluster_concentration:.3f}\n"
-                        f"{delta_note}\n"
-                        f"BTC price change last 1h: {price_change:.2f}%\n"
-                        f"Estimated probability of success: {probability:.1f}%"
-                    )
-
-                    c.execute("""
-                        INSERT INTO signal_events (
-                            ts, direction, signal, threshold, status,
+                    if abs(signal) >= threshold:
+                        direction = "SELL" if signal > 0 else "BUY"
+                        probability = 50  # пример, можно считать по hist_rows
+                        c.execute("""
+                            INSERT INTO signal_events (
+                                ts, direction, signal, threshold, status,
+                                exchange_ratio, volatility, delta_note,
+                                cluster_concentration, price_change, p_up, p_down
+                            )
+                            VALUES (?, ?, ?, ?, 'WAITING', ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            now, direction, signal, threshold,
                             exchange_ratio, volatility, delta_note,
-                            cluster_concentration, price_change, p_up, p_down
-                        )
-                        VALUES (?, ?, ?, ?, 'WAITING', ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        now, direction, signal, threshold,
-                        exchange_ratio, volatility, delta_note,
-                        cluster_concentration, price_change, p_up, p_down
-                    ))
-                    conn.commit()
+                            cluster_concentration, 0, 0, 0
+                        ))
 
-                    logger.info(msg_text)
+                    conn.commit()
+                    break  # успех
+
+                except sqlite3.OperationalError as e:
+                    if "database is locked" in str(e):
+                        retries -= 1
+                        time.sleep(0.05)
+                    else:
+                        raise
 
             conn.close()
 
@@ -663,88 +666,80 @@ async def signal_alert_worker():
             logger.exception("signal_alert_worker error")
 
         await asyncio.sleep(60)
-        
+
 async def entry_alert_worker():
     """
-    Ждёт подтверждение цены
+    Ждёт подтверждение цены с защитой от database locked.
     """
     while True:
         try:
             now = int(time.time())
-
             conn = get_db()
             c = conn.cursor()
 
-            # берём незакрытые сигналы
-            rows = c.execute("""
-                SELECT * FROM signal_events
-                WHERE status='WAITING'
-                AND ts > ?
-            """, (now - 3600,)).fetchall()
+            retries = 5
+            while retries > 0:
+                try:
+                    c.execute("BEGIN IMMEDIATE")
 
-            if not rows:
-                conn.close()
-                await asyncio.sleep(30)
-                continue
+                    rows = c.execute("""
+                        SELECT * FROM signal_events
+                        WHERE status='WAITING' AND ts > ?
+                    """, (now - 3600,)).fetchall()
 
-            # текущая цена
-            price_row = c.execute("""
-                SELECT price FROM btc_price
-                ORDER BY ts DESC LIMIT 1
-            """).fetchone()
+                    if not rows:
+                        break
 
-            if not price_row:
-                conn.close()
-                await asyncio.sleep(30)
-                continue
+                    price_row = c.execute("""
+                        SELECT price FROM btc_price
+                        ORDER BY ts DESC LIMIT 1
+                    """).fetchone()
 
-            current_price = price_row["price"]
+                    if not price_row:
+                        break
 
-            for r in rows:
-                signal_id = r["id"]
-                direction = r["direction"]
-                signal_ts = r["ts"]
+                    current_price = price_row["price"]
 
-                # цена в момент сигнала
-                start_row = c.execute("""
-                    SELECT price FROM btc_price
-                    WHERE ts >= ?
-                    ORDER BY ts ASC LIMIT 1
-                """, (signal_ts,)).fetchone()
+                    for r in rows:
+                        signal_id = r["id"]
+                        direction = r["direction"]
+                        signal_ts = r["ts"]
 
-                if not start_row:
-                    continue
+                        start_row = c.execute("""
+                            SELECT price FROM btc_price
+                            WHERE ts >= ?
+                            ORDER BY ts ASC LIMIT 1
+                        """, (signal_ts,)).fetchone()
+                        if not start_row:
+                            continue
+                        start_price = start_row["price"]
+                        delta = (current_price - start_price) / start_price
 
-                start_price = start_row["price"]
-
-                delta = (current_price - start_price) / start_price
-
-                # ---- УСЛОВИЕ ВХОДА ----
-                if direction == "SELL" and delta < -0.001:
-                    trigger = True
-                elif direction == "BUY" and delta > 0.001:
-                    trigger = True
-                else:
-                    trigger = False
-
-                if trigger:
-                    c.execute("""
-                        UPDATE signal_events
-                        SET status='TRIGGERED', triggered_ts=?
-                        WHERE id=?
-                    """, (now, signal_id))
+                        trigger = (direction=="SELL" and delta<-0.001) or (direction=="BUY" and delta>0.001)
+                        if trigger:
+                            c.execute("""
+                                UPDATE signal_events
+                                SET status='TRIGGERED', triggered_ts=?
+                                WHERE id=?
+                            """, (now, signal_id))
 
                     conn.commit()
+                    break
 
-                    logger.info(f"✅ ENTRY: {direction} | delta={delta:.4f}")
+                except sqlite3.OperationalError as e:
+                    if "database is locked" in str(e):
+                        retries -= 1
+                        time.sleep(0.05)
+                    else:
+                        raise
 
             conn.close()
 
         except Exception:
             logger.exception("entry_alert_worker error")
 
-        await asyncio.sleep(30)
-        
+        await asyncio.sleep(30)        
+
 
 # =============================================
 # API
@@ -918,47 +913,6 @@ def volumes():
         logger.exception("Volumes endpoint error")
         return jsonify({"error": "Internal server error"}), 500
 
-    finally:
-        if conn:
-            conn.close()
-
-            
-@app.route("/exchange_flow")
-def exchange_flow():
-    """
-    Возвращает net_flow по кластерам за последние N секунд.
-    Параметр query: ?window=600 (по умолчанию 600 секунд = 10 минут)
-    """
-    window = int(request.args.get("window", 600))  # секунд
-    now = int(time.time())
-    since = now - window
-
-    conn = None
-    try:
-        conn = get_db()
-        rows = conn.execute("""
-            SELECT 
-                cluster_id,
-                SUM(CASE WHEN flow_type='DEPOSIT' THEN btc ELSE 0 END) AS deposit,
-                SUM(CASE WHEN flow_type='WITHDRAW' THEN btc ELSE 0 END) AS withdraw,
-                SUM(CASE WHEN flow_type='DEPOSIT' THEN btc ELSE 0 END) -
-                SUM(CASE WHEN flow_type='WITHDRAW' THEN btc ELSE 0 END) AS net_flow
-            FROM exchange_flow
-            WHERE ts > ?
-            GROUP BY cluster_id
-            ORDER BY net_flow DESC
-        """, (since,)).fetchall()
-
-        result = [dict(r) for r in rows]
-        return jsonify({
-            "window": window,
-            "count": len(result),
-            "flows": result
-        })
-
-    except Exception:
-        logger.exception("Exchange flow endpoint error")
-        return jsonify({"error": "Internal server error"}), 500
     finally:
         if conn:
             conn.close()
