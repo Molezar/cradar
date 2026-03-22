@@ -1103,7 +1103,6 @@ def start_async_tasks_loop():
     loop.create_task(exchange_flow_sampler())
     loop.create_task(research_market_sampler())
     loop.create_task(research_market_updater())
-    loop.create_task(trainer())
     loop.create_task(mempool_ws_worker())
     loop.create_task(behavioral_upgrade_worker())
     loop.create_task(signal_alert_worker())
