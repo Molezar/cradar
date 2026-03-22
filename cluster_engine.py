@@ -115,12 +115,20 @@ def detect_change_addresses(cursor, txids, cluster_id, now, cache):
     if not txids:
         return 0
 
-    placeholders = ",".join("?" * len(txids))
-    rows = cursor.execute(f"""
-        SELECT o.txid, o.address, o.btc
-        FROM tx_outputs o
-        WHERE o.txid IN ({placeholders})
-    """, txids).fetchall()
+    BATCH_SIZE = 900  # безопасно < 999
+    rows = []
+
+    for i in range(0, len(txids), BATCH_SIZE):
+        batch = txids[i:i + BATCH_SIZE]
+        placeholders = ",".join("?" * len(batch))
+
+        batch_rows = cursor.execute(f"""
+            SELECT o.txid, o.address, o.btc
+            FROM tx_outputs o
+            WHERE o.txid IN ({placeholders})
+        """, batch).fetchall()
+
+        rows.extend(batch_rows)
 
     tx_outputs = defaultdict(list)
     for r in rows:
@@ -130,10 +138,13 @@ def detect_change_addresses(cursor, txids, cluster_id, now, cache):
     for outputs in tx_outputs.values():
         if len(outputs) < 2:
             continue
+
         addr1, val1 = outputs[0]
         addr2, val2 = outputs[1]
+
         if val1 < 0.0001 or val2 < 0.0001:
             continue
+
         addresses.append(addr1 if val1 > val2 else addr2)
 
     return batch_process_addresses(addresses, cursor, cache, cluster_id, 0.7, now)
