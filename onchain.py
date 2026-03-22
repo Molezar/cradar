@@ -47,28 +47,34 @@ def resolve_cluster(address, cursor, cache=None):
     if cache is not None and address in cache:
         return cache[address]
 
-    r = cursor.execute("""
+    r = fetchone_with_retry(
+        cursor,
+        """
         SELECT cluster_id, confidence
         FROM cluster_addresses
         WHERE address=?
-    """, (address,)).fetchone()
+        """,
+        (address,)
+    )
 
     result = (r["cluster_id"], r["confidence"]) if r else (None, 0)
 
     if cache is not None:
         cache[address] = result
-        
+
         if len(cache) > 500000:
             cache.clear()
 
     return result
 
-def update_address_seen(address, cursor):
-    cursor.execute("""
+def update_address_seen(addr, cursor):
+    now = int(time.time())
+
+    execute_with_retry(cursor, """
         UPDATE cluster_addresses
         SET last_seen=?
-        WHERE address=?
-    """, (int(time.time()), address))
+        WHERE address=? AND last_seen < ?
+    """, (now, addr, now))
 
 def create_behavioral_cluster(address, cursor, cache=None):
     now = int(time.time())
@@ -305,10 +311,11 @@ def classify_flow(inputs, outputs, cursor, cache=None):
             if cid in _cluster_type_cache:
                 cluster_type = _cluster_type_cache[cid]
             else:
-                row = cursor.execute(
+                row = fetchone_with_retry(
+                    cursor,
                     "SELECT cluster_type FROM clusters WHERE id=?",
                     (cid,)
-                ).fetchone()
+                )
                 cluster_type = row["cluster_type"] if row else None
                 _cluster_type_cache[cid] = cluster_type
                 if len(_cluster_type_cache) > CACHE_LIMIT:
@@ -333,10 +340,11 @@ def classify_flow(inputs, outputs, cursor, cache=None):
             if cid in _cluster_type_cache:
                 cluster_type = _cluster_type_cache[cid]
             else:
-                row = cursor.execute(
+                row = fetchone_with_retry(
+                    cursor,
                     "SELECT cluster_type FROM clusters WHERE id=?",
                     (cid,)
-                ).fetchone()
+                )
                 cluster_type = row["cluster_type"] if row else None
                 _cluster_type_cache[cid] = cluster_type
                 if len(_cluster_type_cache) > CACHE_LIMIT:
@@ -583,6 +591,19 @@ def detect_peel_chain(inputs, outputs):
 # TX processing
 # =============================================
 
+def fetchone_with_retry(cursor, sql, params=None, retries=5, delay=0.1):
+    for _ in range(retries):
+        try:
+            if params:
+                return cursor.execute(sql, params).fetchone()
+            return cursor.execute(sql).fetchone()
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                time.sleep(delay)
+            else:
+                raise
+    raise
+
 def execute_with_retry(cursor, sql, params=None, retries=5, delay=0.1):
     """
     Выполняет SQL с retry при sqlite3.OperationalError (database is locked)
@@ -787,7 +808,11 @@ def process_tx(tx, cursor, cluster_cache):
             cid = _cid(cid)
             cluster_type = _cluster_type_cache.get(cid)
             if not cluster_type:
-                row = cursor.execute("SELECT cluster_type FROM clusters WHERE id=?", (cid,)).fetchone()
+                row = fetchone_with_retry(
+                    cursor,
+                    "SELECT cluster_type FROM clusters WHERE id=?",
+                    (cid,)
+                )
                 cluster_type = row["cluster_type"] if row else None
                 _cluster_type_cache[cid] = cluster_type
                 if len(_cluster_type_cache) > CACHE_LIMIT:
@@ -897,9 +922,12 @@ async def mempool_ws_worker():
 
                         # безопасный commit с retry
                         try:
-                            execute_with_retry(c, "COMMIT")
+                            conn.commit()
                         except sqlite3.OperationalError as e:
-                            logger.error(f"[MEMPOOL] Failed to commit: {e}")
+                            if "locked" in str(e).lower():
+                                logger.warning("[MEMPOOL] Commit locked, will retry next batch")
+                            else:
+                                raise
 
         except Exception as e:
             logger.error(f"[MEMPOOL] WS error: {e}")
