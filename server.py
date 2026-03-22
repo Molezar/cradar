@@ -508,7 +508,7 @@ async def behavioral_upgrade_worker():
             now = int(time.time())
 
             # Проверяем, есть ли кластеры для апгрейда в очереди
-            if not upgrade_queue():
+            if not upgrade_queue:
                 await asyncio.sleep(300)
                 continue
 
