@@ -2,6 +2,8 @@
 from flask import Flask, jsonify, send_from_directory, request, Response
 from flask_cors import CORS
 import os
+import traceback
+import sys
 import threading
 import asyncio
 import json
@@ -18,6 +20,13 @@ from logger import get_logger
 logger = get_logger(__name__)
 
 app = Flask(__name__)
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    print("🔥 UNHANDLED ERROR:", e)
+    traceback.print_exc()
+    return "error", 500
+    
 CORS(app)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -661,7 +670,8 @@ async def signal_alert_worker():
                 direction = "SELL" if signal > 0 else "BUY"
                 probability = p_down if direction == "SELL" else p_up
                 
-                if probability < 60:  # минимальная вероятность для надежного сигнала
+                if probability < 60:
+                    pass
                 else:
                     msg_text = (
                         f"🚨 SIGNAL {direction}\n"
