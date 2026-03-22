@@ -19,6 +19,7 @@ ALERT_WHALE_BTC = Config.ALERT_WHALE_BTC
 SATOSHI = 100_000_000
 MEMPOOL_WS = "wss://mempool.emzy.de/api/v1/ws"
 
+upgrade_queue = set()
 _events = queue.Queue()
 _seen_txids = set()
 _seen_txids_queue = deque()
@@ -818,7 +819,7 @@ def process_tx(tx, cursor, cluster_cache):
                 if len(_cluster_type_cache) > CACHE_LIMIT:
                     _cluster_type_cache.popitem(last=False)
             if cluster_type == "BEHAVIORAL":
-                behavioral_to_exchange(cid, cursor, now)
+                upgrade_queue.add(cid)
 
     # ======================================
     # Update output address activity

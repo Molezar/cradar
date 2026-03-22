@@ -13,7 +13,7 @@ import queue
 import sqlite3
 from config import Config
 from database.database import get_db, init_db
-from onchain import mempool_ws_worker, get_event_queue, behavioral_to_exchange
+from onchain import mempool_ws_worker, get_event_queue, behavioral_to_exchange, upgrade_queue
 from cluster_engine import run_cluster_expansion
 from logger import get_logger
 
@@ -506,6 +506,12 @@ async def behavioral_upgrade_worker():
     while True:
         try:
             now = int(time.time())
+
+            # Проверяем, есть ли кластеры для апгрейда в очереди
+            if not upgrade_queue():
+                await asyncio.sleep(300)
+                continue
+
             conn = None
             try:
                 conn = get_db()
@@ -531,7 +537,13 @@ async def behavioral_upgrade_worker():
                             if behavioral_to_exchange(cid, c, now):
                                 upgraded += 1
 
-                        conn.commit()
+                        try:
+                            conn.commit()
+                        except sqlite3.OperationalError as e:
+                            if "locked" in str(e).lower():
+                                logger.warning("[CLUSTER] Commit locked, will retry later")
+                            else:
+                                raise
                         break  # успех
                     except sqlite3.OperationalError as e:
                         if "database is locked" in str(e):
