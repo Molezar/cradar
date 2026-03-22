@@ -80,23 +80,20 @@ def update_address_seen(addr, cursor):
 def create_behavioral_cluster(address, cursor, cache=None):
     now = int(time.time())
 
-    existing = cursor.execute("""
-        SELECT cluster_id FROM cluster_addresses
-        WHERE address=?
-    """, (address,)).fetchone()
-
+    existing = fetchone_with_retry(cursor, "SELECT cluster_id FROM cluster_addresses WHERE address=?", (address,))
     if existing:
         return existing["cluster_id"]
-        
-    cursor.execute("""
+    
+    # безопасный INSERT в clusters
+    execute_with_retry(cursor, """
         INSERT INTO clusters
         (cluster_type, confidence, size, created_at, last_updated)
         VALUES (?, ?, ?, ?, ?)
     """, ("BEHAVIORAL", 0.4, 1, now, now))
-
     cluster_id = cursor.lastrowid
 
-    cursor.execute("""
+    # безопасный INSERT в cluster_addresses
+    execute_with_retry(cursor, """
         INSERT OR IGNORE INTO cluster_addresses
         (address, cluster_id, confidence, first_seen, last_seen)
         VALUES (?, ?, ?, ?, ?)
@@ -105,7 +102,7 @@ def create_behavioral_cluster(address, cursor, cache=None):
     if cache is not None:
         cache[address] = (cluster_id, 0.4)
 
-    return cluster_id
+    return cluster_ids
 
 
 # ==============================================
@@ -113,51 +110,48 @@ def create_behavioral_cluster(address, cursor, cache=None):
 # ==============================================
 
 def merge_clusters(target_cluster, source_cluster, cursor, cache=None):
-
     if target_cluster == source_cluster:
         return
 
-    cursor.execute("""
+    # ===== UPDATE cluster_addresses =====
+    execute_with_retry(cursor, """
         UPDATE cluster_addresses
         SET cluster_id=?
         WHERE cluster_id=?
     """, (target_cluster, source_cluster))
         
-    # update whale_classification references
-    cursor.execute("""
+    # ===== UPDATE whale_classification =====
+    execute_with_retry(cursor, """
         UPDATE whale_classification
         SET from_cluster = ?
         WHERE from_cluster = ?
     """, (target_cluster, source_cluster))
     
-    cursor.execute("""
+    execute_with_retry(cursor, """
         UPDATE whale_classification
         SET to_cluster = ?
         WHERE to_cluster = ?
     """, (target_cluster, source_cluster))
     
-    
-    # update exchange_flow
-    cursor.execute("""
+    # ===== UPDATE exchange_flow =====
+    execute_with_retry(cursor, """
         UPDATE exchange_flow
         SET cluster_id = ?
         WHERE cluster_id = ?
     """, (target_cluster, source_cluster))
     
-    
-    # update address_fingerprint
-    cursor.execute("""
+    # ===== UPDATE address_fingerprint =====
+    execute_with_retry(cursor, """
         UPDATE address_fingerprint
         SET cluster_id = ?
         WHERE cluster_id = ?
     """, (target_cluster, source_cluster))
     
-    cursor.execute("""
-        DELETE FROM clusters
-        WHERE id=?
-    """, (source_cluster,))
+    # ===== DELETE old cluster =====
+    execute_with_retry(cursor, "DELETE FROM clusters WHERE id=?", (source_cluster,))
         
-    cursor.execute("""
+    # ===== UPDATE target cluster size =====
+    execute_with_retry(cursor, """
         UPDATE clusters
         SET size = (
             SELECT COUNT(*) FROM cluster_addresses
@@ -166,13 +160,16 @@ def merge_clusters(target_cluster, source_cluster, cursor, cache=None):
         WHERE id=?
     """, (target_cluster, target_cluster))
 
+    # ===== Update cache =====
     if cache is not None:
         for addr, data in list(cache.items()):
             if _cid(data[0]) == source_cluster:
                 cache[addr] = (target_cluster, data[1])
                 
+    # ===== Clear cluster type cache =====
     _cluster_type_cache.pop(source_cluster, None)
     _cluster_type_cache.pop(target_cluster, None)
+
     logger.info(f"[CLUSTER] merged {source_cluster} → {target_cluster}")
     
 
@@ -204,16 +201,15 @@ def get_output_map(tx):
     return m
 
 def store_tx_io(txid, inputs_map, outputs_map, cursor):
-
     input_rows = [(txid, addr, btc) for addr, btc in inputs_map.items()]
     output_rows = [(txid, addr, btc) for addr, btc in outputs_map.items()]
 
-    cursor.executemany("""
+    executemany_with_retry(cursor, """
         INSERT OR IGNORE INTO tx_inputs (txid, address, btc)
         VALUES (?, ?, ?)
     """, input_rows)
 
-    cursor.executemany("""
+    executemany_with_retry(cursor, """
         INSERT OR IGNORE INTO tx_outputs (txid, address, btc)
         VALUES (?, ?, ?)
     """, output_rows)
@@ -224,14 +220,17 @@ def store_tx_io(txid, inputs_map, outputs_map, cursor):
 # ==============================================
 
 def behavioral_to_exchange(cluster_id, cursor, now):
-
     lookback = now - (30 * 24 * 3600)
 
-    rows = cursor.execute("""
+    rows = fetchall_with_retry(
+        cursor,
+        """
         SELECT txid
         FROM whale_classification
         WHERE time > ? AND (from_cluster=? OR to_cluster=?)
-    """, (lookback, cluster_id, cluster_id)).fetchall()
+        """,
+        (lookback, cluster_id, cluster_id)
+    )
 
     if not rows:
         return False
@@ -244,26 +243,23 @@ def behavioral_to_exchange(cluster_id, cursor, now):
     deposit_pattern = 0
 
     for txid in txids:
-
-        inputs = cursor.execute(
+        inputs = fetchall_with_retry(
+            cursor,
             "SELECT address FROM tx_inputs WHERE txid=?",
             (txid,)
-        ).fetchall()
-
+        )
         if len(inputs) > 1:
             multi_input_count += 1
 
-        outputs = cursor.execute(
+        outputs = fetchall_with_retry(
+            cursor,
             "SELECT address FROM tx_outputs WHERE txid=?",
             (txid,)
-        ).fetchall()
-
+        )
         if len(outputs) >= 5:
             sweep_count += 1
-            
         if len(outputs) >= 10:
             fanout_count += 1
-            
         if len(inputs) >= 3 and len(outputs) == 1:
             deposit_pattern += 1
 
@@ -273,15 +269,16 @@ def behavioral_to_exchange(cluster_id, cursor, now):
         or fanout_count >= 10
         or deposit_pattern >= 5
     ):
-
-        cursor.execute("""
+        execute_with_retry(
+            cursor,
+            """
             UPDATE clusters
             SET cluster_type=?, confidence=?, last_updated=?
             WHERE id=?
-        """, ("EXCHANGE", 0.9, now, cluster_id))
-
+            """,
+            ("EXCHANGE", 0.9, now, cluster_id)
+        )
         logger.info(f"[CLUSTER] Behavioral cluster {cluster_id} upgraded to EXCHANGE")
-
         return True
 
     return False
@@ -605,6 +602,19 @@ def fetchone_with_retry(cursor, sql, params=None, retries=5, delay=0.1):
                 raise
     raise
 
+def fetchall_with_retry(cursor, sql, params=None, retries=5, delay=0.1):
+    for _ in range(retries):
+        try:
+            if params:
+                return cursor.execute(sql, params).fetchall()
+            return cursor.execute(sql).fetchall()
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                time.sleep(delay)
+            else:
+                raise
+    raise sqlite3.OperationalError(f"Max retries exceeded for SQL fetchall: {sql}")
+
 def execute_with_retry(cursor, sql, params=None, retries=5, delay=0.1):
     """
     Выполняет SQL с retry при sqlite3.OperationalError (database is locked)
@@ -836,22 +846,17 @@ def process_tx(tx, cursor, cluster_cache):
     flows = classify_flow(inputs, outputs, cursor, cluster_cache)
     if not flows:
         flows = heuristic_flow_classification(inputs, outputs, total)
-
+    
+    # Сохраняем общую транзакцию
     execute_with_retry(cursor, "INSERT OR IGNORE INTO whale_tx(txid, btc, time) VALUES (?,?,?)", (txid, total, now))
-
+    
+    # Определяем confidence
     confidence = 0.9 if len(inputs) == 1 and len(outputs) == 1 else 0.6 if len(inputs) > 1 or len(outputs) > 2 else 0.7
-
+    
+    # Сохраняем каждый поток безопасно через новую функцию
     for from_c, to_c, flow_type, flow_btc in flows:
         from_c, to_c = _cid(from_c), _cid(to_c)
-        execute_with_retry(cursor, """
-            INSERT INTO whale_classification
-            (txid, btc, time, from_cluster, to_cluster, flow_type, confidence)
-            VALUES (?,?,?,?,?,?,?)
-            ON CONFLICT(txid, flow_type, from_cluster, to_cluster)
-            DO UPDATE SET btc = excluded.btc,
-                          time = excluded.time,
-                          confidence = excluded.confidence
-        """, (txid, flow_btc, now, from_c, to_c, flow_type, confidence))
+        safe_insert_whale_classification(cursor, txid, flow_btc, now, from_c, to_c, flow_type, confidence)
 
         # Exchange flow aggregation (1h bucket)
         bucket = now - (now % 3600)
@@ -870,6 +875,25 @@ def process_tx(tx, cursor, cluster_cache):
                      "from_cluster": from_c, "to_cluster": to_c, "confidence": confidence, "time": now}
             _events.put(event)
             logger.info(f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}")
+
+def safe_insert_whale_classification(cursor, txid, flow_btc, now, from_c, to_c, flow_type, confidence):
+    retries = 3
+    for _ in range(retries):
+        try:
+            execute_with_retry(cursor, """
+                INSERT INTO whale_classification
+                (txid, btc, time, from_cluster, to_cluster, flow_type, confidence)
+                VALUES (?,?,?,?,?,?,?)
+                ON CONFLICT(txid, flow_type, from_cluster, to_cluster)
+                DO UPDATE SET btc = excluded.btc,
+                              time = excluded.time,
+                              confidence = excluded.confidence
+            """, (txid, flow_btc, now, from_c, to_c, flow_type, confidence))
+            break
+        except sqlite3.IntegrityError as e:
+            # редкая коллизия, можно логировать и пропустить
+            logger.warning(f"[MEMPOOL] Duplicate whale classification skipped: {txid} {from_c}->{to_c} {flow_type}")
+            break
 
 
 # ==============================================
