@@ -701,7 +701,6 @@ async def signal_alert_worker():
                                 cluster_concentration, price_change, p_up, p_down
                             ))
                             conn.commit()
-                            logger.info(msg_text)
 
                     conn.commit()
                     break  # успех
