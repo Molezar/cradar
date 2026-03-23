@@ -844,22 +844,13 @@ def process_tx(tx, cursor, cluster_cache):
         if flow_type in ("DEPOSIT", "WITHDRAW", "INTERNAL") and flow_btc >= MIN_WHALE_BTC:
             cid = to_c if flow_type == "DEPOSIT" else from_c
             if cid is not None:
-                # Проверка существования кластера в exchange_flow
-                exists = fetchone_with_retry(cursor, """
-                    SELECT 1 FROM exchange_flow
-                    WHERE ts=? AND cluster_id=? AND flow_type=?
-                """, (bucket, cid, flow_type))
-                if exists:
-                    execute_with_retry(cursor, """
-                        UPDATE exchange_flow
-                        SET btc = btc + ?
-                        WHERE ts=? AND cluster_id=? AND flow_type=?
-                    """, (flow_btc, bucket, cid, flow_type))
-                else:
-                    execute_with_retry(cursor, """
-                        INSERT INTO exchange_flow (ts, cluster_id, flow_type, btc)
-                        VALUES (?,?,?,?)
-                    """, (bucket, cid, flow_type, flow_btc))
+                # безопасная вставка с суммированием при конфликте
+                execute_with_retry(cursor, """
+                    INSERT INTO exchange_flow (ts, cluster_id, flow_type, btc)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(ts, cluster_id, flow_type)
+                    DO UPDATE SET btc = btc + excluded.btc
+                """, (bucket, cid, flow_type, flow_btc))
 
         if flow_btc >= ALERT_WHALE_BTC:
             _events.put({

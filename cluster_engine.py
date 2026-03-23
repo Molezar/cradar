@@ -1,9 +1,11 @@
 # cluster_engine.py
 import time
 from collections import defaultdict
+import sqlite3
 
 from database.database import get_db
 from logger import get_logger
+from onchain import fetchone_with_retry, fetchall_with_retry, execute_with_retry, executemany_with_retry
 
 logger = get_logger(__name__)
 
@@ -15,46 +17,46 @@ BATCH_SLEEP = 0.02
 SQL_BATCH_SIZE = 900  # 🔥 важно для SQLite
 
 
-# ✅ универсальный батчевый SELECT
+# ✅ универсальный батчевый SELECT с retry
 def batched_select(cursor, base_query, items):
     results = []
     for i in range(0, len(items), SQL_BATCH_SIZE):
         batch = items[i:i + SQL_BATCH_SIZE]
         placeholders = ",".join("?" * len(batch))
         query = base_query.format(placeholders=placeholders)
-        rows = cursor.execute(query, batch).fetchall()
+        rows = fetchall_with_retry(cursor, query, batch)
         results.extend(rows)
     return results
 
 
 def get_exchange_clusters(cursor):
-    return cursor.execute("""
+    return fetchall_with_retry(cursor, """
         SELECT id, name
         FROM clusters
         WHERE cluster_type='EXCHANGE'
-    """).fetchall()
+    """)
 
 
 def get_recent_exchange_txs(cursor, since_ts, cluster_id):
-    rows = cursor.execute("""
+    rows = fetchall_with_retry(cursor, """
         SELECT txid
         FROM whale_classification
         WHERE time > ?
         AND (from_cluster = ? OR to_cluster = ?)
-    """, (since_ts, cluster_id, cluster_id)).fetchall()
+    """, (since_ts, cluster_id, cluster_id))
     return [r["txid"] for r in rows]
 
 
 def try_fingerprint(cursor, addr):
     prefix = addr[:6]
     length = len(addr)
-    fp = cursor.execute("""
+    fp = fetchone_with_retry(cursor, """
         SELECT cluster_id, count
         FROM address_fingerprint
         WHERE prefix=? AND length=?
         ORDER BY count DESC
         LIMIT 1
-    """, (prefix, length)).fetchone()
+    """, (prefix, length))
     if fp and fp["count"] >= FINGERPRINT_THRESHOLD:
         return fp["cluster_id"]
     return None
@@ -63,7 +65,7 @@ def try_fingerprint(cursor, addr):
 def update_fingerprint(cursor, addr, cluster_id):
     prefix = addr[:6]
     length = len(addr)
-    cursor.execute("""
+    execute_with_retry(cursor, """
         INSERT INTO address_fingerprint
         (prefix,length,cluster_id,count)
         VALUES (?,?,?,1)
@@ -75,22 +77,19 @@ def update_fingerprint(cursor, addr, cluster_id):
 def insert_or_update_address(cursor, cache, addr, cluster_id, confidence, now):
     existing = cache.get(addr)
     if existing is None:
-        existing = cursor.execute("""
+        row = fetchone_with_retry(cursor, """
             SELECT cluster_id, confidence
             FROM cluster_addresses
             WHERE address=?
-        """, (addr,)).fetchone()
-        if existing:
-            existing = dict(existing)
-        else:
-            existing = None
+        """, (addr,))
+        existing = dict(row) if row else None
         cache[addr] = existing
 
     if existing:
         if existing["cluster_id"] != cluster_id:
             return False
         new_conf = min(1.0, existing["confidence"] + 0.05)
-        cursor.execute("""
+        execute_with_retry(cursor, """
             UPDATE cluster_addresses
             SET confidence = ?, last_seen = ?
             WHERE address=?
@@ -100,7 +99,7 @@ def insert_or_update_address(cursor, cache, addr, cluster_id, confidence, now):
         fp_cluster = try_fingerprint(cursor, addr)
         if fp_cluster and fp_cluster != cluster_id:
             return False
-        cursor.execute("""
+        execute_with_retry(cursor, """
             INSERT INTO cluster_addresses
             (address, cluster_id, confidence, first_seen, last_seen)
             VALUES (?,?,?,?,?)
@@ -140,13 +139,10 @@ def detect_change_addresses(cursor, txids, cluster_id, now, cache):
     for outputs in tx_outputs.values():
         if len(outputs) < 2:
             continue
-
         addr1, val1 = outputs[0]
         addr2, val2 = outputs[1]
-
         if val1 < 0.0001 or val2 < 0.0001:
             continue
-
         addresses.append(addr1 if val1 > val2 else addr2)
 
     return batch_process_addresses(addresses, cursor, cache, cluster_id, 0.7, now)
@@ -178,11 +174,11 @@ def detect_multi_input_exchange(cursor, txids, cluster_id, now, cache):
                 has_in_cluster = True
                 break
 
-            row = cursor.execute(
+            row = fetchone_with_retry(
+                cursor,
                 "SELECT cluster_id FROM cluster_addresses WHERE address=?",
                 (a,)
-            ).fetchone()
-
+            )
             if row and row["cluster_id"] == cluster_id:
                 has_in_cluster = True
                 break
@@ -221,7 +217,7 @@ def expand_exchange_cluster_from_db(cursor, cluster_id, name):
     learned = batch_process_addresses(addresses, cursor, cache, cluster_id, 0.6, now)
 
     if learned > 0:
-        cursor.execute("""
+        execute_with_retry(cursor, """
             UPDATE clusters
             SET size = (SELECT COUNT(*) FROM cluster_addresses WHERE cluster_id=?),
                 last_updated=?
