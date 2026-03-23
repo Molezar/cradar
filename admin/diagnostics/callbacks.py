@@ -11,13 +11,18 @@ logger = get_logger(__name__)
 async def handle_fix_null_clusters(callback):
     """
     Чистит NULL в whale_classification (from_cluster / to_cluster)
-    и приводит к -1 для корректной работы UNIQUE + ON CONFLICT,
+    и приводит к фиктивному кластеру 0 ("UNKNOWN") для корректной работы UNIQUE + ON CONFLICT,
     затем удаляет дубли после нормализации
     """
-
     try:
         conn = get_db()
         cursor = conn.cursor()
+
+        # ===== создаем фиктивный кластер для NULL =====
+        cursor.execute("""
+            INSERT OR IGNORE INTO clusters (id, cluster_type, name, created_at, last_updated)
+            VALUES (0, 'unknown', 'UNKNOWN', strftime('%s','now'), strftime('%s','now'))
+        """)
 
         # ===== сколько было NULL =====
         cursor.execute("""
@@ -27,17 +32,15 @@ async def handle_fix_null_clusters(callback):
         """)
         before_null = cursor.fetchone()["cnt"]
 
-        # ===== фиксим from_cluster =====
+        # ===== заменяем NULL на фиктивный кластер 0 =====
         cursor.execute("""
             UPDATE whale_classification
-            SET from_cluster = -1
+            SET from_cluster = 0
             WHERE from_cluster IS NULL
         """)
-
-        # ===== фиксим to_cluster =====
         cursor.execute("""
             UPDATE whale_classification
-            SET to_cluster = -1
+            SET to_cluster = 0
             WHERE to_cluster IS NULL
         """)
 
@@ -76,6 +79,7 @@ async def handle_fix_null_clusters(callback):
 
         conn.close()
 
+        # ===== формируем текст отчета =====
         text = (
             "🛠 FIX NULL clusters + remove duplicates\n\n"
             f"NULL before: {before_null}\n"
