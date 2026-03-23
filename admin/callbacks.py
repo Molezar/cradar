@@ -46,7 +46,8 @@ from admin.diagnostics.callbacks import (
     handle_cluster_health,
     handle_top_clusters,
     handle_flow_pipeline_check,
-    handle_research_correlation
+    handle_research_correlation,
+    handle_fix_null_clusters
 )
 
 from aiogram.fsm.state import StatesGroup, State
@@ -92,6 +93,9 @@ async def handle_admin_callbacks(callback: types.CallbackQuery, state: FSMContex
             await handle_flow_pipeline_check(callback)
         elif data == "admin:research_correlation":
             await handle_research_correlation(callback)
+        elif data == "admin:fix_null_clusters":
+            await handle_fix_null_clusters(callback)
+        
         
         elif data == "admin:download_db":
             await handle_download_db(callback)

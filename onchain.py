@@ -170,6 +170,15 @@ def merge_clusters(target_cluster, source_cluster, cursor, cache=None):
     _cluster_type_cache.pop(source_cluster, None)
     _cluster_type_cache.pop(target_cluster, None)
 
+    # =FIX: remove duplicates after merge =
+    execute_with_retry(cursor, """
+        DELETE FROM whale_classification
+        WHERE rowid NOT IN (
+            SELECT MIN(rowid)
+            FROM whale_classification
+            GROUP BY txid, flow_type, from_cluster, to_cluster
+        )
+    """)
     logger.info(f"[CLUSTER] merged {source_cluster} → {target_cluster}")
     
 
@@ -846,6 +855,13 @@ def process_tx(tx, cursor, cluster_cache):
     flows = classify_flow(inputs, outputs, cursor, cluster_cache)
     if not flows:
         flows = heuristic_flow_classification(inputs, outputs, total)
+    # ===== FIX: deduplicate flows =====
+    unique_flows = {}
+    for f in flows:
+        key = (f[0], f[1], f[2])  # (from_cluster, to_cluster, flow_type)
+        unique_flows[key] = f
+    
+    flows = list(unique_flows.values())
     
     # Сохраняем общую транзакцию
     execute_with_retry(cursor, "INSERT OR IGNORE INTO whale_tx(txid, btc, time) VALUES (?,?,?)", (txid, total, now))
@@ -855,7 +871,13 @@ def process_tx(tx, cursor, cluster_cache):
     
     # Сохраняем каждый поток безопасно через новую функцию
     for from_c, to_c, flow_type, flow_btc in flows:
-        from_c, to_c = _cid(from_c), _cid(to_c)
+        from_c = _cid(from_c)
+        to_c = _cid(to_c)
+    
+        # FIX: normalize NULL early
+        from_c = from_c if from_c is not None else -1
+        to_c = to_c if to_c is not None else -1
+    
         safe_insert_whale_classification(cursor, txid, flow_btc, now, from_c, to_c, flow_type, confidence)
 
         # Exchange flow aggregation (1h bucket)
@@ -877,33 +899,42 @@ def process_tx(tx, cursor, cluster_cache):
             logger.info(f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}")
 
 def safe_insert_whale_classification(cursor, txid, flow_btc, now, from_c, to_c, flow_type, confidence):
+    """
+    Безопасная вставка/апдейт whale_classification:
+    - нет race condition (1 SQL вместо 2)
+    - защита от NULL (используем -1)
+    - работает с UNIQUE(txid, flow_type, from_cluster, to_cluster)
+    """
+
+    # ✅ нормализация NULL → обязательно
+    from_c = from_c if from_c is not None else -1
+    to_c = to_c if to_c is not None else -1
+
     retries = 3
+
     for _ in range(retries):
         try:
-            # 1. Пытаемся вставить
             execute_with_retry(cursor, """
-                INSERT OR IGNORE INTO whale_classification
+                INSERT INTO whale_classification
                 (txid, btc, time, from_cluster, to_cluster, flow_type, confidence)
                 VALUES (?,?,?,?,?,?,?)
+                ON CONFLICT(txid, flow_type, from_cluster, to_cluster)
+                DO UPDATE SET
+                    btc = excluded.btc,
+                    time = excluded.time,
+                    confidence = excluded.confidence
             """, (txid, flow_btc, now, from_c, to_c, flow_type, confidence))
 
-            # 2. Обновляем (если уже была)
-            execute_with_retry(cursor, """
-                UPDATE whale_classification
-                SET btc = ?, time = ?, confidence = ?
-                WHERE txid = ?
-                  AND flow_type = ?
-                  AND from_cluster IS ?
-                  AND to_cluster IS ?
-            """, (flow_btc, now, confidence, txid, flow_type, from_c, to_c))
-
-            break
+            return  # ✅ успех — выходим сразу
 
         except sqlite3.OperationalError as e:
             if "locked" in str(e).lower():
                 time.sleep(0.02)
             else:
                 raise
+
+    # если совсем не получилось
+    raise sqlite3.OperationalError("Failed to insert/update whale_classification after retries")
 
 
 # ==============================================

@@ -8,6 +8,101 @@ from database.database import get_db
 
 logger = get_logger(__name__)
 
+async def handle_fix_null_clusters(callback):
+    """
+    Чистит NULL в whale_classification (from_cluster / to_cluster)
+    и приводит к -1 для корректной работы UNIQUE + ON CONFLICT,
+    затем удаляет дубли после нормализации
+    """
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # ===== сколько было NULL =====
+        cursor.execute("""
+            SELECT COUNT(*) as cnt
+            FROM whale_classification
+            WHERE from_cluster IS NULL OR to_cluster IS NULL
+        """)
+        before_null = cursor.fetchone()["cnt"]
+
+        # ===== фиксим from_cluster =====
+        cursor.execute("""
+            UPDATE whale_classification
+            SET from_cluster = -1
+            WHERE from_cluster IS NULL
+        """)
+
+        # ===== фиксим to_cluster =====
+        cursor.execute("""
+            UPDATE whale_classification
+            SET to_cluster = -1
+            WHERE to_cluster IS NULL
+        """)
+
+        conn.commit()
+
+        # ===== удаляем дубли после нормализации =====
+        cursor.execute("""
+            DELETE FROM whale_classification
+            WHERE rowid NOT IN (
+                SELECT MIN(rowid)
+                FROM whale_classification
+                GROUP BY txid, flow_type, from_cluster, to_cluster
+            )
+        """)
+        conn.commit()
+
+        # ===== проверяем после =====
+        cursor.execute("""
+            SELECT COUNT(*) as cnt
+            FROM whale_classification
+            WHERE from_cluster IS NULL OR to_cluster IS NULL
+        """)
+        after_null = cursor.fetchone()["cnt"]
+
+        # ===== проверяем сколько осталось дублей =====
+        cursor.execute("""
+            SELECT COUNT(*) as cnt
+            FROM (
+                SELECT txid, flow_type, from_cluster, to_cluster, COUNT(*) as c
+                FROM whale_classification
+                GROUP BY txid, flow_type, from_cluster, to_cluster
+                HAVING c > 1
+            )
+        """)
+        duplicates = cursor.fetchone()["cnt"]
+
+        conn.close()
+
+        text = (
+            "🛠 FIX NULL clusters + remove duplicates\n\n"
+            f"NULL before: {before_null}\n"
+            f"NULL after: {after_null}\n"
+            f"duplicates remaining: {duplicates}\n\n"
+        )
+
+        if after_null == 0 and duplicates == 0:
+            text += "✅ NULL очищены и дубли удалены"
+        elif after_null > 0:
+            text += "⚠️ есть оставшиеся NULL"
+        elif duplicates > 0:
+            text += "⚠️ есть оставшиеся дубли"
+        else:
+            text += "ℹ️ изменений не было нужно"
+
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_diagnostics_kb()
+        )
+
+    except Exception as e:
+        logger.exception(e)
+        await callback.message.edit_text(
+            "❌ Ошибка очистки NULL и удаления дублей",
+            reply_markup=get_admin_to_main_bt()
+        )
 
 async def handle_tables_info(callback):
     """
