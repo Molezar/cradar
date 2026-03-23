@@ -222,10 +222,6 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_exchange_flow_cluster ON exchange_flow(cluster_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_flow_ts ON exchange_flow(ts)")
 
-    c.execute("""
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_exchange_flow_ts_cluster_flow
-    ON exchange_flow(ts, cluster_id, flow_type)
-    """)
 
     # =====================================================
     # Whale correlation

@@ -10,21 +10,45 @@ logger = get_logger(__name__)
 
 async def handle_fix_null_clusters(callback):
     """
-    Чистит NULL в whale_classification (from_cluster / to_cluster)
-    и приводит к фиктивному кластеру 0 ("UNKNOWN") для корректной работы UNIQUE + ON CONFLICT,
-    затем удаляет дубли после нормализации
+    Чистит NULL в whale_classification + удаляет дубли
+    + проверяет и удаляет проблемный индекс exchange_flow
+    (без падений, идемпотентно)
     """
     try:
         conn = get_db()
         cursor = conn.cursor()
 
-        # ===== создаем фиктивный кластер для NULL =====
+        # ==============================
+        # ===== SAFE INDEX CHECK =======
+        # ==============================
+        indexes_before = []
+        indexes_after = []
+
+        try:
+            rows = cursor.execute("PRAGMA index_list(exchange_flow);").fetchall()
+            indexes_before = [r[1] for r in rows]
+
+            # пробуем удалить индекс (если вдруг остался)
+            cursor.execute("DROP INDEX IF EXISTS ux_exchange_flow_ts_cluster_flow;")
+
+            rows = cursor.execute("PRAGMA index_list(exchange_flow);").fetchall()
+            indexes_after = [r[1] for r in rows]
+
+        except Exception:
+            # вообще не критично — не ломаем основной процесс
+            pass
+
+        # ==============================
+        # ===== FIX NULL CLUSTERS ======
+        # ==============================
+
+        # фиктивный кластер
         cursor.execute("""
             INSERT OR IGNORE INTO clusters (id, cluster_type, name, created_at, last_updated)
             VALUES (0, 'unknown', 'UNKNOWN', strftime('%s','now'), strftime('%s','now'))
         """)
 
-        # ===== сколько было NULL =====
+        # сколько было NULL
         cursor.execute("""
             SELECT COUNT(*) as cnt
             FROM whale_classification
@@ -32,7 +56,7 @@ async def handle_fix_null_clusters(callback):
         """)
         before_null = cursor.fetchone()["cnt"]
 
-        # ===== заменяем NULL на фиктивный кластер 0 =====
+        # замена NULL
         cursor.execute("""
             UPDATE whale_classification
             SET from_cluster = 0
@@ -46,7 +70,10 @@ async def handle_fix_null_clusters(callback):
 
         conn.commit()
 
-        # ===== удаляем дубли после нормализации =====
+        # ==============================
+        # ===== REMOVE DUPLICATES ======
+        # ==============================
+
         cursor.execute("""
             DELETE FROM whale_classification
             WHERE rowid NOT IN (
@@ -57,7 +84,10 @@ async def handle_fix_null_clusters(callback):
         """)
         conn.commit()
 
-        # ===== проверяем после =====
+        # ==============================
+        # ===== POST CHECK ============
+        # ==============================
+
         cursor.execute("""
             SELECT COUNT(*) as cnt
             FROM whale_classification
@@ -65,7 +95,6 @@ async def handle_fix_null_clusters(callback):
         """)
         after_null = cursor.fetchone()["cnt"]
 
-        # ===== проверяем сколько осталось дублей =====
         cursor.execute("""
             SELECT COUNT(*) as cnt
             FROM (
@@ -79,7 +108,10 @@ async def handle_fix_null_clusters(callback):
 
         conn.close()
 
-        # ===== формируем текст отчета =====
+        # ==============================
+        # ===== REPORT ================
+        # ==============================
+
         text = (
             "🛠 FIX NULL clusters + remove duplicates\n\n"
             f"NULL before: {before_null}\n"
@@ -87,6 +119,13 @@ async def handle_fix_null_clusters(callback):
             f"duplicates remaining: {duplicates}\n\n"
         )
 
+        # индекс инфо
+        if indexes_before or indexes_after:
+            text += "📊 exchange_flow indexes:\n"
+            text += f"before: {indexes_before}\n"
+            text += f"after: {indexes_after}\n\n"
+
+        # итог
         if after_null == 0 and duplicates == 0:
             text += "✅ NULL очищены и дубли удалены"
         elif after_null > 0:
@@ -104,10 +143,10 @@ async def handle_fix_null_clusters(callback):
     except Exception as e:
         logger.exception(e)
         await callback.message.edit_text(
-            "❌ Ошибка очистки NULL и удаления дублей",
+            "❌ Ошибка очистки NULL / индекса / дублей",
             reply_markup=get_admin_to_main_bt()
         )
-
+        
 async def handle_tables_info(callback):
     """
     Показывает количество записей и список колонок в каждой таблице БД
