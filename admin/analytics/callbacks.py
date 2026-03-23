@@ -16,6 +16,7 @@ async def handle_exchange_flow_1h(callback):
     + DELTA усиление
     + cluster concentration
     + динамические пороги (p90)
+    + probability (weighted by signal strength)
     """
 
     try:
@@ -35,7 +36,11 @@ async def handle_exchange_flow_1h(callback):
             WHERE ts > ?
         """, (hour_ago,))
         row = cursor.fetchone()
-        inflow, outflow, internal = row["inflow"] or 0, row["outflow"] or 0, row["internal"] or 0
+
+        inflow = row["inflow"] or 0
+        outflow = row["outflow"] or 0
+        internal = row["internal"] or 0
+
         net = inflow - outflow
         total_flow = inflow + outflow
         exchange_ratio = net / total_flow if total_flow > 0 else 0
@@ -49,25 +54,48 @@ async def handle_exchange_flow_1h(callback):
             WHERE ts > ?
         """, (hour_ago,))
         vol_row = cursor.fetchone()
-        volatility = (vol_row["max_p"] - vol_row["min_p"]) / vol_row["min_p"] if vol_row and vol_row["max_p"] and vol_row["min_p"] else 0
+
+        volatility = (
+            (vol_row["max_p"] - vol_row["min_p"]) / vol_row["min_p"]
+            if vol_row and vol_row["max_p"] and vol_row["min_p"]
+            else 0
+        )
 
         # --------------------------
-        # historical signals for thresholds
+        # historical
         # --------------------------
         hist_rows = cursor.execute("""
-            SELECT exchange_net_ratio, volatility
+            SELECT exchange_net_ratio, volatility, price, price_1h
             FROM research_market
             WHERE exchange_net_ratio IS NOT NULL AND volatility IS NOT NULL
         """).fetchall()
-        signals = [(r["exchange_net_ratio"] or 0)*(r["volatility"] or 0) for r in hist_rows]
-        threshold = sorted(abs(s) for s in signals)[int(len(signals)*0.9)] if len(signals) >= 20 else 0.0005
 
-        delta_values = [abs((hist_rows[i]["exchange_net_ratio"] or 0) - (hist_rows[i-1]["exchange_net_ratio"] or 0))
-                        for i in range(1, len(hist_rows))]
-        p95_delta = sorted(delta_values)[int(len(delta_values)*0.95)] if delta_values else 0.01
+        signal_hist = [
+            (r["exchange_net_ratio"] or 0) * (r["volatility"] or 0)
+            for r in hist_rows
+        ]
 
-        prev_ratio = hist_rows[-1]["exchange_net_ratio"] if hist_rows else 0
+        threshold = (
+            sorted(abs(s) for s in signal_hist)[int(len(signal_hist) * 0.9)]
+            if len(signal_hist) >= 20 else 0.0005
+        )
+
+        # --------------------------
+        # DELTA
+        # --------------------------
+        prev_ratio = (hist_rows[-1]["exchange_net_ratio"] or 0) if hist_rows else 0
         exchange_delta = exchange_ratio - prev_ratio
+
+        delta_values = [
+            abs((hist_rows[i]["exchange_net_ratio"] or 0) -
+                (hist_rows[i - 1]["exchange_net_ratio"] or 0))
+            for i in range(1, len(hist_rows))
+        ]
+
+        p95_delta = (
+            sorted(delta_values)[int(len(delta_values) * 0.95)]
+            if delta_values else 0.01
+        )
 
         # --------------------------
         # cluster concentration
@@ -78,32 +106,85 @@ async def handle_exchange_flow_1h(callback):
             WHERE ts > ?
             GROUP BY cluster_id
         """, (hour_ago,)).fetchall()
+
         total_btc = sum(r["cluster_btc"] or 0 for r in cluster_rows)
-        max_cluster = max(r["cluster_btc"] or 0 for r in cluster_rows) if cluster_rows else 0
+        max_cluster = max((r["cluster_btc"] or 0 for r in cluster_rows), default=0)
+
         cluster_concentration = (max_cluster / total_btc) if total_btc > 0 else 0
 
         # --------------------------
-        # signal
+        # SIGNAL
         # --------------------------
         signal = exchange_ratio * volatility
         delta_note = ""
+
         if abs(exchange_delta) > p95_delta:
             signal *= 1.5
             delta_note = f"⚡ DELTA surge! ({exchange_delta:.4f} > {p95_delta:.4f}) → signal x1.5"
 
         # --------------------------
+        # PROBABILITY (WEIGHTED)
+        # --------------------------
+        def safe_delta(r):
+            if r["price"] is None or r["price_1h"] is None or r["price"] == 0:
+                return None
+            return (r["price_1h"] - r["price"]) / r["price"]
+
+        weighted_up = 0.0
+        weighted_down = 0.0
+        total_weight = 0.0
+
+        for r in hist_rows:
+            hist_signal = (r["exchange_net_ratio"] or 0) * (r["volatility"] or 0)
+
+            if abs(hist_signal) < threshold:
+                continue
+
+            d = safe_delta(r)
+            if d is None:
+                continue
+
+            # вес = насколько сигнал сильнее threshold
+            weight = abs(hist_signal) / threshold
+
+            total_weight += weight
+
+            if hist_signal > 0 and d < 0:
+                weighted_down += weight
+            elif hist_signal < 0 and d > 0:
+                weighted_up += weight
+
+        # Bayesian smoothing (защита от малого sample)
+        alpha = 1.0
+        beta = 1.0
+
+        p_up = ((weighted_up + alpha) / (total_weight + alpha + beta) * 100) if total_weight else 0
+        p_down = ((weighted_down + alpha) / (total_weight + alpha + beta) * 100) if total_weight else 0
+
+        # --------------------------
         # BTC price change
         # --------------------------
-        cursor.execute("SELECT price FROM btc_price WHERE ts >= ? ORDER BY ts ASC LIMIT 1", (hour_ago,))
+        cursor.execute("""
+            SELECT price FROM btc_price 
+            WHERE ts >= ? ORDER BY ts ASC LIMIT 1
+        """, (hour_ago,))
         start_row = cursor.fetchone()
-        cursor.execute("SELECT price FROM btc_price ORDER BY ts DESC LIMIT 1")
+
+        cursor.execute("""
+            SELECT price FROM btc_price 
+            ORDER BY ts DESC LIMIT 1
+        """)
         end_row = cursor.fetchone()
+
         conn.close()
 
-        price_change = (end_row["price"] - start_row["price"]) / start_row["price"] * 100 if start_row and end_row and start_row["price"] else None
+        price_change = (
+            (end_row["price"] - start_row["price"]) / start_row["price"] * 100
+            if start_row and end_row and start_row["price"] else None
+        )
 
         # --------------------------
-        # text
+        # TEXT
         # --------------------------
         text = (
             "📈 Exchange flow (last 1h)\n\n"
@@ -116,14 +197,22 @@ async def handle_exchange_flow_1h(callback):
             f"🔥 signal: {signal:.6f}\n"
             f"⚙️ threshold (p90): {threshold:.6f}\n"
             f"💠 cluster concentration: {cluster_concentration:.3f}\n\n"
+            f"🎯 Probabilities (weighted):\n"
+            f"🟢 BUY success: {p_up:.1f}%\n"
+            f"🔴 SELL success: {p_down:.1f}%\n\n"
         )
+
         if abs(signal) < threshold:
             text += "⚪ signal below threshold → ignore (noise)\n\n"
         else:
-            text += "🔴 SELL pressure (strong)\n\n" if signal > 0 else "🟢 BUY / accumulation (strong)\n\n"
+            if signal > 0:
+                text += f"🔴 SELL pressure\nConfidence: {p_down:.1f}%\n\n"
+            else:
+                text += f"🟢 BUY / accumulation\nConfidence: {p_up:.1f}%\n\n"
 
         if delta_note:
             text += f"{delta_note}\n\n"
+
         if price_change is not None:
             text += f"💰 BTC price change: {price_change:.2f}%\n"
 
@@ -138,7 +227,7 @@ async def handle_exchange_flow_1h(callback):
         await callback.message.edit_text(
             "❌ Ошибка получения exchange flow",
             reply_markup=get_admin_to_main_bt()
-        )       
+        )
 
 async def handle_whale_pressure_15m(callback):
     """
