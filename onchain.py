@@ -667,7 +667,7 @@ def executemany_with_retry(cursor, sql, seq_of_params, retries=5, delay=0.1):
             else:
                 raise
     raise sqlite3.OperationalError(f"Max retries exceeded for SQL executemany: {sql}")
-    
+
 def process_tx(tx, cursor, cluster_cache):
     txid = tx.get("txid")
     if not txid or txid in _seen_txids:
@@ -839,18 +839,26 @@ def process_tx(tx, cursor, cluster_cache):
         # safe_insert_whale_classification сам пропускает полностью невалидные потоки
         safe_insert_whale_classification(cursor, txid, flow_btc, now, from_c, to_c, flow_type, confidence)
 
-        # Exchange flow aggregation (1h bucket)
+        # ===== Exchange flow aggregation (1h bucket) =====
         bucket = now - (now % 3600)
         if flow_type in ("DEPOSIT", "WITHDRAW", "INTERNAL") and flow_btc >= MIN_WHALE_BTC:
             cid = to_c if flow_type == "DEPOSIT" else from_c
             if cid is not None:
-                exists = fetchone_with_retry(cursor, "SELECT 1 FROM clusters WHERE id=?", (cid,))
+                # Проверка существования кластера в exchange_flow
+                exists = fetchone_with_retry(cursor, """
+                    SELECT 1 FROM exchange_flow
+                    WHERE ts=? AND cluster_id=? AND flow_type=?
+                """, (bucket, cid, flow_type))
                 if exists:
+                    execute_with_retry(cursor, """
+                        UPDATE exchange_flow
+                        SET btc = btc + ?
+                        WHERE ts=? AND cluster_id=? AND flow_type=?
+                    """, (flow_btc, bucket, cid, flow_type))
+                else:
                     execute_with_retry(cursor, """
                         INSERT INTO exchange_flow (ts, cluster_id, flow_type, btc)
                         VALUES (?,?,?,?)
-                        ON CONFLICT(ts, cluster_id, flow_type)
-                        DO UPDATE SET btc = btc + excluded.btc
                     """, (bucket, cid, flow_type, flow_btc))
 
         if flow_btc >= ALERT_WHALE_BTC:
@@ -863,7 +871,7 @@ def process_tx(tx, cursor, cluster_cache):
                 "confidence": confidence,
                 "time": now
             })
-            logger.info(f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}")
+            logger.info(f"[EVENT] Stored+Queued {txid} {flow_btc} BTC {flow_type}")    
 
 def safe_insert_whale_classification(cursor, txid, flow_btc, now, from_c, to_c, flow_type, confidence):
     # проверяем валидность кластеров
