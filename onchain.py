@@ -901,17 +901,34 @@ def process_tx(tx, cursor, cluster_cache):
 def safe_insert_whale_classification(cursor, txid, flow_btc, now, from_c, to_c, flow_type, confidence):
     """
     Безопасная вставка/апдейт whale_classification:
-    - нет race condition (1 SQL вместо 2)
-    - защита от NULL (используем -1)
-    - работает с UNIQUE(txid, flow_type, from_cluster, to_cluster)
+    - нет race condition
+    - защита от NULL
+    - проверка существования cluster_id в clusters
     """
 
-    # ✅ нормализация NULL → обязательно
+    # нормализация NULL
     from_c = from_c if from_c is not None else -1
     to_c = to_c if to_c is not None else -1
 
-    retries = 3
+    # ✅ проверяем, что cluster_id существует в clusters
+    def valid_cluster(cid):
+        if cid == -1:
+            return None
+        row = fetchone_with_retry(cursor, "SELECT 1 FROM clusters WHERE id=?", (cid,))
+        return cid if row else None
 
+    from_c = valid_cluster(from_c)
+    to_c = valid_cluster(to_c)
+
+    # Если оба кластера невалидные, пропускаем вставку
+    if from_c is None and to_c is None:
+        return
+
+    # Подставляем -1 для одного невалидного кластера
+    from_c_db = from_c if from_c is not None else -1
+    to_c_db = to_c if to_c is not None else -1
+
+    retries = 3
     for _ in range(retries):
         try:
             execute_with_retry(cursor, """
@@ -923,19 +940,16 @@ def safe_insert_whale_classification(cursor, txid, flow_btc, now, from_c, to_c, 
                     btc = excluded.btc,
                     time = excluded.time,
                     confidence = excluded.confidence
-            """, (txid, flow_btc, now, from_c, to_c, flow_type, confidence))
-
-            return  # ✅ успех — выходим сразу
-
+            """, (txid, flow_btc, now, from_c_db, to_c_db, flow_type, confidence))
+            return
         except sqlite3.OperationalError as e:
             if "locked" in str(e).lower():
                 time.sleep(0.02)
             else:
                 raise
 
-    # если совсем не получилось
     raise sqlite3.OperationalError("Failed to insert/update whale_classification after retries")
-
+    
 
 # ==============================================
 # WebSocket Worker
