@@ -880,20 +880,30 @@ def safe_insert_whale_classification(cursor, txid, flow_btc, now, from_c, to_c, 
     retries = 3
     for _ in range(retries):
         try:
+            # 1. Пытаемся вставить
             execute_with_retry(cursor, """
-                INSERT INTO whale_classification
+                INSERT OR IGNORE INTO whale_classification
                 (txid, btc, time, from_cluster, to_cluster, flow_type, confidence)
                 VALUES (?,?,?,?,?,?,?)
-                ON CONFLICT(txid, flow_type, from_cluster, to_cluster)
-                DO UPDATE SET btc = excluded.btc,
-                              time = excluded.time,
-                              confidence = excluded.confidence
             """, (txid, flow_btc, now, from_c, to_c, flow_type, confidence))
+
+            # 2. Обновляем (если уже была)
+            execute_with_retry(cursor, """
+                UPDATE whale_classification
+                SET btc = ?, time = ?, confidence = ?
+                WHERE txid = ?
+                  AND flow_type = ?
+                  AND from_cluster IS ?
+                  AND to_cluster IS ?
+            """, (flow_btc, now, confidence, txid, flow_type, from_c, to_c))
+
             break
-        except sqlite3.IntegrityError as e:
-            # редкая коллизия, можно логировать и пропустить
-            logger.warning(f"[MEMPOOL] Duplicate whale classification skipped: {txid} {from_c}->{to_c} {flow_type}")
-            break
+
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                time.sleep(0.02)
+            else:
+                raise
 
 
 # ==============================================
