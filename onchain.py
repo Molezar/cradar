@@ -119,37 +119,60 @@ def merge_clusters(target_cluster, source_cluster, cursor, cache=None):
         SET cluster_id=?
         WHERE cluster_id=?
     """, (target_cluster, source_cluster))
-        
-    # ===== UPDATE whale_classification =====
+
+    # ===== SAFE MERGE whale_classification =====
+    rows = fetchall_with_retry(cursor, """
+        SELECT txid, btc, time, from_cluster, to_cluster, flow_type, confidence
+        FROM whale_classification
+        WHERE from_cluster=? OR to_cluster=?
+    """, (source_cluster, source_cluster))
+
+    for r in rows:
+        new_from = target_cluster if r["from_cluster"] == source_cluster else r["from_cluster"]
+        new_to = target_cluster if r["to_cluster"] == source_cluster else r["to_cluster"]
+
+        execute_with_retry(cursor, """
+            INSERT INTO whale_classification
+            (txid, btc, time, from_cluster, to_cluster, flow_type, confidence)
+            VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(txid, flow_type, from_cluster, to_cluster)
+            DO UPDATE SET
+                btc = whale_classification.btc + excluded.btc,
+                time = excluded.time,
+                confidence = MAX(whale_classification.confidence, excluded.confidence)
+        """, (
+            r["txid"],
+            r["btc"],
+            r["time"],
+            new_from,
+            new_to,
+            r["flow_type"],
+            r["confidence"]
+        ))
+
+    # удаляем старые записи source_cluster
     execute_with_retry(cursor, """
-        UPDATE whale_classification
-        SET from_cluster = ?
-        WHERE from_cluster = ?
-    """, (target_cluster, source_cluster))
-    
-    execute_with_retry(cursor, """
-        UPDATE whale_classification
-        SET to_cluster = ?
-        WHERE to_cluster = ?
-    """, (target_cluster, source_cluster))
-    
+        DELETE FROM whale_classification
+        WHERE from_cluster=? OR to_cluster=?
+    """, (source_cluster, source_cluster))
+
     # ===== UPDATE exchange_flow =====
     execute_with_retry(cursor, """
         UPDATE exchange_flow
         SET cluster_id = ?
         WHERE cluster_id = ?
     """, (target_cluster, source_cluster))
-    
+
     # ===== UPDATE address_fingerprint =====
     execute_with_retry(cursor, """
         UPDATE address_fingerprint
         SET cluster_id = ?
         WHERE cluster_id = ?
     """, (target_cluster, source_cluster))
-    
+
     # ===== DELETE old cluster =====
     execute_with_retry(cursor, "DELETE FROM clusters WHERE id=?", (source_cluster,))
-        
+
     # ===== UPDATE target cluster size =====
     execute_with_retry(cursor, """
         UPDATE clusters
@@ -165,20 +188,11 @@ def merge_clusters(target_cluster, source_cluster, cursor, cache=None):
         for addr, data in list(cache.items()):
             if _cid(data[0]) == source_cluster:
                 cache[addr] = (target_cluster, data[1])
-                
+
     # ===== Clear cluster type cache =====
     _cluster_type_cache.pop(source_cluster, None)
     _cluster_type_cache.pop(target_cluster, None)
 
-    # =FIX: remove duplicates after merge =
-    execute_with_retry(cursor, """
-        DELETE FROM whale_classification
-        WHERE rowid NOT IN (
-            SELECT MIN(rowid)
-            FROM whale_classification
-            GROUP BY txid, flow_type, from_cluster, to_cluster
-        )
-    """)
     logger.info(f"[CLUSTER] merged {source_cluster} → {target_cluster}")
     
 
