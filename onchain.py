@@ -661,7 +661,7 @@ def process_tx(tx, cursor, cluster_cache):
 
     _seen_txids.add(txid)
     _seen_txids_queue.append(txid)
-    if len(_seen_txids_queue) > SEEN_LIMIT:
+    if len(_seen_txids_queue) > SEEN_TX_LIMIT:
         old = _seen_txids_queue.popleft()
         _seen_txids.discard(old)
 
