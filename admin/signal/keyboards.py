@@ -30,6 +30,24 @@ def get_signal_kb():
         ]
     )
     
+def get_advice_kb():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Обновить совет",
+                    callback_data="advice:refresh"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад",
+                    callback_data="admin:deal"
+                )
+            ]
+        ]
+    )
+    
 def get_reset_stats_kb():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -90,6 +108,7 @@ def get_auto_mode_kb(auto_enabled: bool):
  
 def get_signal_main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎯 Совет", callback_data="advice:get")],
         [InlineKeyboardButton(text="🎯 Сигнал", callback_data="signal:get")],
         [InlineKeyboardButton(text="🤖 Авто режим", callback_data="auto:menu")],
         [InlineKeyboardButton(text="💰 Баланс", callback_data="admin:show_balance")],

@@ -23,6 +23,7 @@ from admin.main.callbacks import (
 from admin.signal.keyboards import  get_signal_main_kb
 from admin.signal.callbacks import (
     handle_signal,
+    handle_advice,
     handle_cancel_trade,
     handle_refresh_signal,
     auto_menu,
@@ -151,6 +152,8 @@ async def handle_admin_callbacks(callback: types.CallbackQuery, state: FSMContex
         
         elif data == "signal:get":
             await handle_signal(callback)
+        elif data == "advice:get":
+            await handle_advice(callback)
         elif data == "cancel:trade":
             await handle_cancel_trade(callback)
         elif data == "signal:refresh":

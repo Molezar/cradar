@@ -285,6 +285,44 @@ async def handle_signal(callback: types.CallbackQuery):
         logger.exception(f"Signal error: {e}")
         await callback.message.answer("⚠️ Ошибка расчёта сигнала")
 
+async def handle_advice(callback: types.CallbackQuery):
+    await callback.answer()
+
+    try:
+        result = await generate_signal()
+
+        if result is None:
+            await callback.message.answer("⚖️ Сейчас нет чёткого сигнала. Рынок во флэте.")
+            return
+        
+        raw_score = result['raw_score']
+        total_score = result['total_score']
+        threshold = result['threshold']
+        above_below = "ВЫШЕ" if abs(total_score) >= threshold else "НИЖЕ"
+        
+        text = (
+            f"📊 <b>Баланс:</b> {result['balance']:.2f} USDT\n\n"
+            f"🎯 <b>Рекомендация:</b> {result['direction']}\n"
+            f"📍 Entry: {result['entry']}\n"
+            f"🛑 Stop: {result['stop']}\n"
+            f"🎯 Take: {result['take']}\n"
+            f"📈 Плечо: {result['leverage']}x\n"
+            f"💰 Размер позиции: {result['position_size']:.6f} BTC\n"
+            f"⚠ Риск: {RISK_PER_TRADE*100:.0f}%\n\n"
+            f"📊 Сырой сигнал: {raw_score:.3f}\n"
+            f"📊 Сила сигнала: {abs(total_score):.1f} (порог {threshold:.3f}) – {above_below} порога"
+        )
+
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_advice_kb(),
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+        logger.exception(f"Advice error: {e}")
+        await callback.message.answer("⚠️ Ошибка расчёта совета")
+
 async def handle_close_by_market(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -470,6 +508,37 @@ async def generate_and_save_signal():
     position_size = calculate_position_size(balance, entry, stop)
 
     save_signal(direction, entry, stop, take, leverage, position_size)
+
+    return {
+        "direction": direction,
+        "entry": entry,
+        "stop": stop,
+        "take": take,
+        "leverage": leverage,
+        "position_size": position_size,
+        "balance": balance,
+        "raw_score": raw_score,
+        "threshold": threshold,
+        "total_score": total_score
+    }
+    
+async def generate_signal():
+
+    strategy = AggressiveStrategy()
+    trade_data = await strategy.generate_signal()
+
+    direction = trade_data["direction"]
+    entry = trade_data["entry"]
+    stop = trade_data["stop"]
+    take = trade_data["take"]
+    leverage = trade_data["leverage"]
+    raw_score = trade_data["raw_score"]
+    threshold = trade_data["threshold"]
+    total_score = trade_data["total_score"]
+    
+    balance = 1000
+    position_size = calculate_position_size(balance, entry, stop)
+
 
     return {
         "direction": direction,
