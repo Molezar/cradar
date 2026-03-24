@@ -11,6 +11,7 @@ from utils import calculate_system_stats
 from admin.keyboards import get_admin_to_main_bt
 from .keyboards import (
     get_signal_kb,
+    get_advice_kb,
     get_reset_stats_kb,
     get_reset_stats_confirm_kb,
     get_auto_mode_kb
