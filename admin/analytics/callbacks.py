@@ -114,6 +114,31 @@ async def handle_exchange_flow_1h(callback):
             delta_note = f"⚡ DELTA surge! ({exchange_delta:.4f} > {p95_delta:.4f}) → signal x1.5"
 
         # --------------------------
+        # PURE SIGNAL (NO HISTORY) ✅
+        # --------------------------
+        strength = (abs(signal) / threshold) if threshold > 0 else 0
+        strength = min(strength, 1.0)
+
+        confidence = 50 + 40 * strength * (1 + cluster_concentration) / 2
+
+        if strength < 0.1:
+            pure_text = (
+                "🧠 Pure signal (no history):\n"
+                "⚪ NEUTRAL (very weak signal)\n\n"
+            )
+        else:
+            if signal < 0:
+                pure_text = (
+                    "🧠 Pure signal (no history):\n"
+                    f"🟢 BUY confidence: {confidence:.1f}%\n\n"
+                )
+            else:
+                pure_text = (
+                    "🧠 Pure signal (no history):\n"
+                    f"🔴 SELL confidence: {confidence:.1f}%\n\n"
+                )
+
+        # --------------------------
         # HISTORICAL PROBABILITY
         # --------------------------
         def safe_delta(r):
@@ -150,16 +175,14 @@ async def handle_exchange_flow_1h(callback):
         p_down = ((weighted_down + alpha) / (total_weight + alpha + beta) * 100) if total_weight else 50
 
         # --------------------------
-        # SIGNAL-BASED PROBABILITY (NEW)
+        # SIGNAL-BASED PROBABILITY
         # --------------------------
-        strength = min(abs(signal) / threshold, 1.0) if threshold > 0 else 0
-
         if signal < 0:
-            p_signal_up = 50 + 50 * strength * (1 + cluster_concentration) / 2
-            p_signal_down = 100 - p_signal_up
+            p_signal_up = confidence
+            p_signal_down = 100 - confidence
         else:
-            p_signal_down = 50 + 50 * strength * (1 + cluster_concentration) / 2
-            p_signal_up = 100 - p_signal_down
+            p_signal_down = confidence
+            p_signal_up = 100 - confidence
 
         # --------------------------
         # FINAL COMBINED PROBABILITY
@@ -203,6 +226,7 @@ async def handle_exchange_flow_1h(callback):
             f"🔥 signal: {signal:.6f}\n"
             f"⚙️ threshold (p90): {threshold:.6f}\n"
             f"💠 cluster concentration: {cluster_concentration:.3f}\n\n"
+            f"{pure_text}"
             f"🎯 Probabilities (combined):\n"
             f"🟢 BUY success: {final_p_up:.1f}%\n"
             f"🔴 SELL success: {final_p_down:.1f}%\n\n"
@@ -212,9 +236,9 @@ async def handle_exchange_flow_1h(callback):
             text += "⚪ signal below threshold → weak signal (but bias shown above)\n\n"
         else:
             if signal > 0:
-                text += f"🔴 SELL pressure\n"
+                text += "🔴 SELL pressure\n\n"
             else:
-                text += f"🟢 BUY / accumulation\n"
+                text += "🟢 BUY / accumulation\n\n"
 
         if delta_note:
             text += f"{delta_note}\n\n"
