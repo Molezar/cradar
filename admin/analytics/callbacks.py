@@ -10,15 +10,6 @@ from database.database import get_db
 logger = get_logger(__name__)
 
 async def handle_exchange_flow_1h(callback):
-    """
-    Показывает притоки и оттоки BTC на биржи за последний час
-    + signal (ratio * volatility)
-    + DELTA усиление
-    + cluster concentration
-    + динамические пороги (p90)
-    + probability (weighted by signal strength)
-    """
-
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -123,7 +114,7 @@ async def handle_exchange_flow_1h(callback):
             delta_note = f"⚡ DELTA surge! ({exchange_delta:.4f} > {p95_delta:.4f}) → signal x1.5"
 
         # --------------------------
-        # PROBABILITY (WEIGHTED)
+        # HISTORICAL PROBABILITY
         # --------------------------
         def safe_delta(r):
             if r["price"] is None or r["price_1h"] is None or r["price"] == 0:
@@ -144,9 +135,7 @@ async def handle_exchange_flow_1h(callback):
             if d is None:
                 continue
 
-            # вес = насколько сигнал сильнее threshold
             weight = abs(hist_signal) / threshold
-
             total_weight += weight
 
             if hist_signal > 0 and d < 0:
@@ -154,12 +143,29 @@ async def handle_exchange_flow_1h(callback):
             elif hist_signal < 0 and d > 0:
                 weighted_up += weight
 
-        # Bayesian smoothing (защита от малого sample)
         alpha = 1.0
         beta = 1.0
 
-        p_up = ((weighted_up + alpha) / (total_weight + alpha + beta) * 100) if total_weight else 0
-        p_down = ((weighted_down + alpha) / (total_weight + alpha + beta) * 100) if total_weight else 0
+        p_up = ((weighted_up + alpha) / (total_weight + alpha + beta) * 100) if total_weight else 50
+        p_down = ((weighted_down + alpha) / (total_weight + alpha + beta) * 100) if total_weight else 50
+
+        # --------------------------
+        # SIGNAL-BASED PROBABILITY (NEW)
+        # --------------------------
+        strength = min(abs(signal) / threshold, 1.0) if threshold > 0 else 0
+
+        if signal < 0:
+            p_signal_up = 50 + 50 * strength * (1 + cluster_concentration) / 2
+            p_signal_down = 100 - p_signal_up
+        else:
+            p_signal_down = 50 + 50 * strength * (1 + cluster_concentration) / 2
+            p_signal_up = 100 - p_signal_down
+
+        # --------------------------
+        # FINAL COMBINED PROBABILITY
+        # --------------------------
+        final_p_up = (p_up * 0.6) + (p_signal_up * 0.4)
+        final_p_down = (p_down * 0.6) + (p_signal_down * 0.4)
 
         # --------------------------
         # BTC price change
@@ -197,18 +203,18 @@ async def handle_exchange_flow_1h(callback):
             f"🔥 signal: {signal:.6f}\n"
             f"⚙️ threshold (p90): {threshold:.6f}\n"
             f"💠 cluster concentration: {cluster_concentration:.3f}\n\n"
-            f"🎯 Probabilities (weighted):\n"
-            f"🟢 BUY success: {p_up:.1f}%\n"
-            f"🔴 SELL success: {p_down:.1f}%\n\n"
+            f"🎯 Probabilities (combined):\n"
+            f"🟢 BUY success: {final_p_up:.1f}%\n"
+            f"🔴 SELL success: {final_p_down:.1f}%\n\n"
         )
 
         if abs(signal) < threshold:
-            text += "⚪ signal below threshold → ignore (noise)\n\n"
+            text += "⚪ signal below threshold → weak signal (but bias shown above)\n\n"
         else:
             if signal > 0:
-                text += f"🔴 SELL pressure\nConfidence: {p_down:.1f}%\n\n"
+                text += f"🔴 SELL pressure\n"
             else:
-                text += f"🟢 BUY / accumulation\nConfidence: {p_up:.1f}%\n\n"
+                text += f"🟢 BUY / accumulation\n"
 
         if delta_note:
             text += f"{delta_note}\n\n"

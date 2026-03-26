@@ -528,6 +528,9 @@ async def generate_signal():
     strategy = AggressiveStrategy()
     trade_data = await strategy.generate_signal()
 
+    if trade_data is None:
+        return None
+    
     direction = trade_data["direction"]
     entry = trade_data["entry"]
     stop = trade_data["stop"]
